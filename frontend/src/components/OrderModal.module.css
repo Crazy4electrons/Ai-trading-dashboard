@@ -1,0 +1,106 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 150ms ease;
+}
+
+.modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-lg);
+  width: 320px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.typeTag {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.buy  { color: var(--accent-green); }
+.sell { color: var(--accent-red); }
+
+.closeBtn {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+}
+.closeBtn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+
+.body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.symbolRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.symbolLabel { font-size: 11px; color: var(--text-secondary); }
+.symbolValue {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+
+.ok  { font-size: 11px; color: var(--accent-green); text-align: center; }
+.err { font-size: 11px; color: var(--accent-red);   text-align: center; }
+
+.confirmBtn {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  width: 100%;
+  transition: var(--transition);
+}
+.buyBtn {
+  background: var(--accent-green-dim);
+  border: 1px solid rgba(0,230,118,0.4);
+  color: var(--accent-green);
+}
+.buyBtn:hover:not(:disabled) { background: rgba(0,230,118,0.2); }
+.sellBtn {
+  background: var(--accent-red-dim);
+  border: 1px solid rgba(255,61,87,0.4);
+  color: var(--accent-red);
+}
+.sellBtn:hover:not(:disabled) { background: rgba(255,61,87,0.2); }
+.confirmBtn:disabled { opacity: 0.5; }
+
+.note {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}

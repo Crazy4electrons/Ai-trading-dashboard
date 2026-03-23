@@ -1,0 +1,174 @@
+.container {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Composite */
+.compositeCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.buyBorder   { border-color: rgba(0,230,118,0.3); background: rgba(0,230,118,0.05); }
+.sellBorder  { border-color: rgba(255,61,87,0.3);  background: rgba(255,61,87,0.05); }
+.neutralBorder{ border-color: rgba(255,171,0,0.3); background: rgba(255,171,0,0.05); }
+
+.compositeLeft { display: flex; align-items: center; gap: 12px; }
+.compositeLabel {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+}
+
+.compositeRight { display: flex; flex-direction: column; align-items: flex-end; }
+.confLabel { font-size: 10px; color: var(--text-secondary); }
+.confValue { font-family: var(--font-mono); font-size: 16px; font-weight: 700; }
+
+/* Signal badge */
+.signalBadge {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.buy     { background: var(--accent-green-dim); color: var(--accent-green); }
+.sell    { background: var(--accent-red-dim);   color: var(--accent-red); }
+.neutral { background: var(--accent-amber-dim); color: var(--accent-amber); }
+
+/* Signal card */
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  transition: var(--transition);
+}
+
+.card:hover { border-color: var(--border-bright); }
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.cardId {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+}
+
+.cardBody { display: flex; flex-direction: column; gap: 6px; }
+
+.detail { display: flex; flex-direction: column; gap: 6px; }
+
+.bigVal {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.textGreen { color: var(--accent-green); }
+.textRed   { color: var(--accent-red); }
+
+.sigLabel { font-size: 11px; color: var(--text-secondary); }
+
+/* Strength bar */
+.strengthBar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.strengthFill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 600ms ease;
+}
+
+.buyFill     { background: var(--accent-green); }
+.sellFill    { background: var(--accent-red); }
+.neutralFill { background: var(--accent-amber); }
+
+/* RSI */
+.rsiBar { display: flex; flex-direction: column; gap: 2px; }
+.rsiTrack {
+  position: relative;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+}
+.rsiFill {
+  position: absolute;
+  top: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-amber);
+  transform: translateX(-50%);
+  box-shadow: 0 0 6px var(--accent-amber);
+}
+.rsiLabels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* MACD */
+.macdSub {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.macdSub b { color: var(--text-primary); }
+
+/* BB */
+.bbBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bbEdge { font-size: 10px; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
+.bbTrack {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  position: relative;
+}
+.bbThumb {
+  position: absolute;
+  top: -8px;
+  width: 20px;
+  height: 20px;
+  background: var(--accent-amber);
+  border-radius: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bbPrice {
+  font-size: 8px;
+  font-weight: 700;
+  color: #000;
+  white-space: nowrap;
+}
