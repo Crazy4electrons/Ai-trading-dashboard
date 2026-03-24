@@ -1,7 +1,8 @@
 /**
- * App — root layout. Uses CSS grid-area for explicit, stable column placement.
+ * App — root layout with drag-to-resize side panels.
+ * Uses inline grid-template-columns driven by state instead of CSS classes.
  */
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useApp } from './context/AppContext';
 import { useMT5, useAccount } from './hooks/useMT5';
 import { calculateAll } from './utils/indicators';
@@ -19,11 +20,16 @@ import OrderModal from './components/OrderModal';
 
 import './styles/globals.css';
 
+const MIN_PANEL = 160;
+const MAX_PANEL = 420;
+
 export default function App() {
   const { focusedSymbol, showSymbols, showAccounts, activeIndicators } = useApp();
 
-  const [timeframe, setTimeframe]   = useState('1h');
-  const [orderModal, setOrderModal] = useState(null);
+  const [timeframe, setTimeframe]       = useState('1h');
+  const [orderModal, setOrderModal]     = useState(null);
+  const [symbolsWidth, setSymbolsWidth] = useState(220);
+  const [accountsWidth, setAccountsWidth] = useState(260);
   const prevPriceRef = useRef(null);
 
   const { candles, price, loading } = useMT5(focusedSymbol, timeframe);
@@ -38,36 +44,73 @@ export default function App() {
     () => (candles?.length ? calculateAll(candles, activeIndicators) : {}),
     [candles, activeIndicators]
   );
+  const compositeSignal = useMemo(() => getCompositeSignal(getSignals(indicators)), [indicators]);
 
-  const compositeSignal = useMemo(() => {
-    const sigs = getSignals(indicators);
-    return getCompositeSignal(sigs);
-  }, [indicators]);
+  /* ── Drag-resize logic ── */
+  const dragging = useRef(null); // 'left' | 'right'
 
-  const layoutClass = [
-    'app-layout',
-    !showSymbols  ? 'hide-symbols'  : '',
-    !showAccounts ? 'hide-accounts' : '',
-  ].filter(Boolean).join(' ');
+  const onMouseMove = useCallback((e) => {
+    if (!dragging.current) return;
+    if (dragging.current === 'left') {
+      setSymbolsWidth((w) => Math.min(MAX_PANEL, Math.max(MIN_PANEL, e.clientX)));
+    } else {
+      setAccountsWidth((w) => Math.min(MAX_PANEL, Math.max(MIN_PANEL, window.innerWidth - e.clientX)));
+    }
+  }, []);
+
+  const onMouseUp = useCallback(() => { dragging.current = null; document.body.style.cursor = ''; }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [onMouseMove, onMouseUp]);
+
+  const startDrag = (side) => (e) => {
+    e.preventDefault();
+    dragging.current = side;
+    document.body.style.cursor = 'col-resize';
+  };
+
+  /* ── Grid columns ── */
+  const cols = [
+    showSymbols  ? `${symbolsWidth}px`  : '0px',
+    '1fr',
+    showAccounts ? `${accountsWidth}px` : '0px',
+  ].join(' ');
 
   return (
-    <div className={layoutClass}>
-
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateRows: '48px 44px 1fr',
+        gridTemplateColumns: cols,
+        gridTemplateAreas: '"header header header" "watch watch watch" "symbols main accounts"',
+        height: '100vh',
+        overflow: 'hidden',
+        transition: 'grid-template-columns 150ms ease',
+      }}
+    >
       <Header price={currentPrice} prevPrice={prevPriceRef.current} />
-
       <Watchlist livePrice={currentPrice} />
 
-      {/* col 1: symbols */}
+      {/* ── Left panel: symbols ── */}
       <div style={{
         gridArea: 'symbols',
         overflow: 'hidden',
         display: showSymbols ? 'flex' : 'none',
         flexDirection: 'column',
+        position: 'relative',
       }}>
         <SymbolsList visible={showSymbols} />
+        {/* Right drag handle */}
+        <DragHandle side="right" onMouseDown={startDrag('left')} />
       </div>
 
-      {/* col 2: main */}
+      {/* ── Center: main dashboard ── */}
       <main style={{
         gridArea: 'main',
         display: 'flex',
@@ -94,13 +137,16 @@ export default function App() {
         )}
       </main>
 
-      {/* col 3: accounts */}
+      {/* ── Right panel: accounts ── */}
       <div style={{
         gridArea: 'accounts',
         overflow: 'hidden',
         display: showAccounts ? 'flex' : 'none',
         flexDirection: 'column',
+        position: 'relative',
       }}>
+        {/* Left drag handle */}
+        <DragHandle side="left" onMouseDown={startDrag('right')} />
         <AccountPanel visible={showAccounts} />
       </div>
 
@@ -114,6 +160,28 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+/** Thin draggable resize handle */
+function DragHandle({ side, onMouseDown }) {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      style={{
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        [side]: 0,
+        width: '4px',
+        cursor: 'col-resize',
+        zIndex: 50,
+        background: 'transparent',
+        transition: 'background 150ms',
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-blue)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+    />
   );
 }
 

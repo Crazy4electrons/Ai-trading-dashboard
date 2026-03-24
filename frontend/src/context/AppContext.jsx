@@ -6,8 +6,9 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 const AppContext = createContext(null);
 
 const DEFAULT_SETTINGS = {
-  metaApiToken: '',
-  mt5AccountId: '',
+  mt5Account: '',
+  mt5Password: '',
+  mt5Server: 'MetaQuotes-Demo',
   newsApiKey: '',
   openaiKey: '',
   anthropicKey: '',

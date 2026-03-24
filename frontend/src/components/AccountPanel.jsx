@@ -42,7 +42,9 @@ export default function AccountPanel({ visible }) {
 function AccountDetails({ account, positions }) {
   if (!account) return <div className={styles.loading}>Connecting to MT5…</div>;
 
-  const unrealizedPnL = positions.reduce((sum, p) => sum + (p.unrealizedProfit || 0), 0);
+  // Ensure positions is an array for safe reduce
+  const posArray = Array.isArray(positions) ? positions : [];
+  const unrealizedPnL = posArray.reduce((sum, p) => sum + (p.unrealizedProfit || 0), 0);
   const pnlColor = unrealizedPnL >= 0 ? styles.green : styles.red;
 
   return (
@@ -81,11 +83,11 @@ function AccountDetails({ account, positions }) {
 
       {/* Open positions */}
       <div className={styles.section}>
-        <span className={styles.sectionLabel}>OPEN POSITIONS ({positions.length})</span>
-        {positions.length === 0 ? (
+        <span className={styles.sectionLabel}>OPEN POSITIONS ({posArray.length})</span>
+        {posArray.length === 0 ? (
           <p className={styles.empty}>No open positions</p>
         ) : (
-          positions.map((pos) => <PositionRow key={pos.id} pos={pos} />)
+          posArray.map((pos) => <PositionRow key={pos.id} pos={pos} />)
         )}
       </div>
     </div>
@@ -125,6 +127,10 @@ function PositionRow({ pos }) {
 }
 
 function OrdersPanel({ positions, history, ordersTab, setOrdersTab }) {
+  // Ensure positions and history are arrays
+  const posArray = Array.isArray(positions) ? positions : [];
+  const histArray = Array.isArray(history) ? history : [];
+
   return (
     <div className={styles.ordersBody}>
       {/* Sub-tabs */}
@@ -132,7 +138,7 @@ function OrdersPanel({ positions, history, ordersTab, setOrdersTab }) {
         <button
           className={`${styles.subTab} ${ordersTab === 'open' ? styles.active : ''}`}
           onClick={() => setOrdersTab('open')}
-        >Open ({positions.length})</button>
+        >Open ({posArray.length})</button>
         <button
           className={`${styles.subTab} ${ordersTab === 'history' ? styles.active : ''}`}
           onClick={() => setOrdersTab('history')}
@@ -141,14 +147,14 @@ function OrdersPanel({ positions, history, ordersTab, setOrdersTab }) {
 
       <div className={styles.ordersList}>
         {ordersTab === 'open' && (
-          positions.length === 0
+          posArray.length === 0
             ? <p className={styles.empty}>No open orders</p>
-            : positions.map((pos) => <OpenOrderRow key={pos.id} pos={pos} />)
+            : posArray.map((pos) => <OpenOrderRow key={pos.id} pos={pos} />)
         )}
         {ordersTab === 'history' && (
-          history.length === 0
+          histArray.length === 0
             ? <p className={styles.empty}>No order history</p>
-            : history.map((ord, i) => <HistoryOrderRow key={ord.id || i} ord={ord} />)
+            : histArray.map((ord, i) => <HistoryOrderRow key={ord.id || i} ord={ord} />)
         )}
       </div>
     </div>

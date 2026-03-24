@@ -1,39 +1,60 @@
 /**
- * SymbolsList — left panel with categorized symbols, search, favorites/watchlist
+ * SymbolsList — left panel with categorized symbols + Favourites tab
+ * Category tabs are horizontally scrollable when panel is narrow
  */
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { SYMBOLS } from '../utils/symbols';
-import { MOCK_PRICES } from '../utils/symbols';
+import { SYMBOLS, MOCK_PRICES, findSymbol } from '../utils/symbols';
 import styles from './SymbolsList.module.css';
 
-const CATEGORIES = ['crypto', 'forex', 'commodities', 'stocks'];
+const CATEGORIES = ['favourites', 'crypto', 'forex', 'commodities', 'stocks'];
 
 export default function SymbolsList({ visible }) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('crypto');
-  const { focusedSymbol, setFocusedSymbol, favorites, toggleFavorite, watchlist, addToWatchlist, removeFromWatchlist } = useApp();
+
+  const {
+    focusedSymbol, setFocusedSymbol,
+    favorites, toggleFavorite,
+    watchlist, addToWatchlist, removeFromWatchlist,
+  } = useApp();
 
   if (!visible) return null;
 
-  const symbols = SYMBOLS[activeCategory] || [];
+  /* Build symbol list for active category */
+  let symbols = [];
+  if (activeCategory === 'favourites') {
+    // Resolve favourite symbol strings back to full objects
+    symbols = favorites.map((sym) => findSymbol(sym)).filter(Boolean);
+  } else {
+    symbols = SYMBOLS[activeCategory] || [];
+  }
+
   const filtered = symbols.filter(
     (s) =>
       s.symbol.toLowerCase().includes(search.toLowerCase()) ||
       s.name.toLowerCase().includes(search.toLowerCase())
   );
 
+  const countLabel = activeCategory === 'favourites'
+    ? `FAVOURITES — ${filtered.length}`
+    : `${activeCategory.toUpperCase()} — ${filtered.length}`;
+
   return (
     <aside className={styles.panel}>
-      {/* Category tabs */}
+
+      {/* Horizontally scrollable category tabs */}
       <div className={styles.catTabs}>
         {CATEGORIES.map((cat) => (
           <button
             key={cat}
             className={`${styles.catBtn} ${activeCategory === cat ? styles.active : ''}`}
-            onClick={() => setActiveCategory(cat)}
+            onClick={() => { setActiveCategory(cat); setSearch(''); }}
           >
-            {cat.charAt(0).toUpperCase() + cat.slice(1)}
+            {cat === 'favourites' ? '★' : cat.charAt(0).toUpperCase() + cat.slice(1)}
+            {cat === 'favourites' && favorites.length > 0 && (
+              <span className={styles.favBadge}>{favorites.length}</span>
+            )}
           </button>
         ))}
       </div>
@@ -43,44 +64,47 @@ export default function SymbolsList({ visible }) {
         <span className={styles.searchIcon}>⌕</span>
         <input
           className={styles.search}
-          placeholder={`Search ${activeCategory}...`}
+          placeholder={`Search${activeCategory === 'favourites' ? ' favourites' : ` ${activeCategory}`}...`}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
 
-      {/* Count */}
-      <div className={styles.count}>
-        {activeCategory.toUpperCase()} — {filtered.length}
-      </div>
+      {/* Count bar */}
+      <div className={styles.count}>{countLabel}</div>
 
-      {/* Symbol rows */}
+      {/* Symbol list — scrollable */}
       <div className={styles.list}>
-        {filtered.map((s) => (
-          <SymbolRow
-            key={s.symbol}
-            sym={s}
-            isFocused={focusedSymbol === s.symbol}
-            isFavorite={favorites.includes(s.symbol)}
-            inWatchlist={watchlist.includes(s.symbol)}
-            onSelect={() => setFocusedSymbol(s.symbol)}
-            onToggleFav={() => toggleFavorite(s.symbol)}
-            onToggleWatch={() =>
-              watchlist.includes(s.symbol)
-                ? removeFromWatchlist(s.symbol)
-                : addToWatchlist(s.symbol)
-            }
-          />
-        ))}
+        {filtered.length === 0 ? (
+          <div className={styles.empty}>
+            {activeCategory === 'favourites'
+              ? 'No favourites yet. Click ★ on any symbol to add it.'
+              : 'No symbols match your search.'}
+          </div>
+        ) : (
+          filtered.map((s) => (
+            <SymbolRow
+              key={s.symbol}
+              sym={s}
+              isFocused={focusedSymbol === s.symbol}
+              isFavorite={favorites.includes(s.symbol)}
+              inWatchlist={watchlist.includes(s.symbol)}
+              onSelect={() => setFocusedSymbol(s.symbol)}
+              onToggleFav={() => toggleFavorite(s.symbol)}
+              onToggleWatch={() =>
+                watchlist.includes(s.symbol)
+                  ? removeFromWatchlist(s.symbol)
+                  : addToWatchlist(s.symbol)
+              }
+            />
+          ))
+        )}
       </div>
     </aside>
   );
 }
 
 function SymbolRow({ sym, isFocused, isFavorite, inWatchlist, onSelect, onToggleFav, onToggleWatch }) {
-  const price = MOCK_PRICES[sym.symbol] || 100;
-  const isUp = Math.random() > 0.4; // demo: random up/down
-
   return (
     <div
       className={`${styles.row} ${isFocused ? styles.focused : ''}`}
@@ -94,7 +118,7 @@ function SymbolRow({ sym, isFocused, isFavorite, inWatchlist, onSelect, onToggle
         <button
           className={`${styles.iconAction} ${isFavorite ? styles.favActive : ''}`}
           onClick={(e) => { e.stopPropagation(); onToggleFav(); }}
-          title={isFavorite ? 'Remove favourite' : 'Add favourite'}
+          title={isFavorite ? 'Remove favourite' : 'Add to favourites'}
         >★</button>
         <button
           className={`${styles.iconAction} ${inWatchlist ? styles.watchActive : ''}`}

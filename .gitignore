@@ -1,3 +1,15 @@
 backend/.env
 backend/node_modules/
 frontend/node_modules/
+
+# Python
+backend/python/__pycache__/
+backend/python/.venv/
+backend/python/venv/
+backend/python/*.egg-info/
+backend/python/dist/
+backend/python/build/
+
+# uv
+backend/python/.venv/
+backend/python/uv.lock

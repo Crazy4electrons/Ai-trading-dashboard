@@ -1,5 +1,6 @@
 /**
  * MT5 REST API routes
+ * Uses Python MetaTrader5 library via subprocess bridge
  */
 import { Router } from 'express';
 import { MT5Service, getMockCandles } from '../services/mt5Service.js';
@@ -13,8 +14,19 @@ router.get('/account', async (req, res) => {
 
 router.get('/candles/:symbol', async (req, res) => {
   const { symbol } = req.params;
-  const { timeframe = '1h', count = 200 } = req.query;
-  const candles = await MT5Service.getCandles(symbol, timeframe, parseInt(count));
+  const { timeframe = '1h', count = 2000 } = req.query;
+  // Cap at 5000 candles max to avoid memory issues
+  const maxCount = Math.min(parseInt(count), 5000);
+  
+  // Try to get real candles from MT5
+  const candles = await MT5Service.getCandles(symbol, timeframe, maxCount);
+  
+  // If MT5 not connected or error, use mock candles for demo mode
+  if (candles.error || !Array.isArray(candles)) {
+    const mockCandles = getMockCandles(symbol, timeframe, maxCount);
+    return res.json(mockCandles);
+  }
+  
   res.json(candles);
 });
 
@@ -29,8 +41,8 @@ router.get('/positions', async (req, res) => {
 });
 
 router.get('/history', async (req, res) => {
-  const { from, to } = req.query;
-  const history = await MT5Service.getHistory(from ? new Date(from) : null, to ? new Date(to) : null);
+  const { days = 30 } = req.query;
+  const history = await MT5Service.getHistory(null, null, parseInt(days));
   res.json(history);
 });
 
@@ -44,8 +56,8 @@ router.post('/order', async (req, res) => {
 });
 
 router.post('/connect', async (req, res) => {
-  const { token, accountId } = req.body;
-  const result = await MT5Service.init(token, accountId);
+  const { account, password, server } = req.body;
+  const result = await MT5Service.init(account, password, server);
   res.json(result);
 });
 

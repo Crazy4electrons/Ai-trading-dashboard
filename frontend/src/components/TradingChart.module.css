@@ -3,8 +3,9 @@
   flex-direction: column;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
-  flex: 0 0 340px; /* fixed height for chart section */
+  flex: 0 0 340px;
   min-height: 280px;
+  position: relative;
 }
 
 .chartHeader {
@@ -37,12 +38,6 @@
   color: var(--text-secondary);
 }
 
-.categoryTag {
-  margin-left: 8px;
-  font-size: 9px;
-  letter-spacing: 1px;
-}
-
 .signalArea {
   display: flex;
   align-items: center;
@@ -64,10 +59,7 @@
 .sigSell   { background: var(--accent-red-dim);   color: var(--accent-red);   border: 1px solid rgba(255,61,87,0.3); }
 .sigNeutral{ background: var(--accent-amber-dim); color: var(--accent-amber); border: 1px solid rgba(255,171,0,0.3); }
 
-.confidence {
-  font-size: 10px;
-  opacity: 0.8;
-}
+.confidence { font-size: 10px; opacity: 0.8; }
 
 .tradeBtn {
   padding: 6px 16px;
@@ -77,19 +69,9 @@
   letter-spacing: 0.5px;
   transition: var(--transition);
 }
-
-.buyBtn {
-  background: var(--accent-green-dim);
-  color: var(--accent-green);
-  border: 1px solid rgba(0,230,118,0.3);
-}
-.buyBtn:hover { background: rgba(0,230,118,0.25); }
-
-.sellBtn {
-  background: var(--accent-red-dim);
-  color: var(--accent-red);
-  border: 1px solid rgba(255,61,87,0.3);
-}
+.buyBtn  { background: var(--accent-green-dim); color: var(--accent-green); border: 1px solid rgba(0,230,118,0.3); }
+.buyBtn:hover  { background: rgba(0,230,118,0.25); }
+.sellBtn { background: var(--accent-red-dim);   color: var(--accent-red);   border: 1px solid rgba(255,61,87,0.3); }
 .sellBtn:hover { background: rgba(255,61,87,0.25); }
 
 .priceRow {
@@ -132,8 +114,7 @@
   border-radius: var(--radius-sm);
   transition: var(--transition);
 }
-
-.tfBtn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.tfBtn:hover  { background: var(--bg-elevated); color: var(--text-primary); }
 .tfActive { background: var(--bg-elevated); color: var(--accent-blue) !important; }
 
 .liveTag {
@@ -150,4 +131,134 @@
   width: 100%;
   flex: 1;
   min-height: 0;
+}
+
+/* ── Drawing + overlay controls — bottom-left of wrapper ── */
+.drawingControls {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+}
+.drawingControls > * { pointer-events: all; }
+
+/* ── Drawing toggle ── */
+.drawToggleBtn {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+.drawToggleBtn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent-blue); }
+.drawToggleActive {
+  background: var(--accent-blue-dim) !important;
+  color: var(--accent-blue) !important;
+  border-color: var(--accent-blue) !important;
+}
+
+/* ── Overlay toggle buttons (MP, SES) ── */
+.overlayBtn {
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+.overlayBtn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent-blue); }
+.overlayActive {
+  background: var(--accent-blue-dim) !important;
+  color: var(--accent-blue) !important;
+  border-color: var(--accent-blue) !important;
+}
+
+/* ── MP mode toggle (1D / 1W) ── */
+.mpModeBtn {
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-amber-dim);
+  border: 1px solid rgba(255,171,0,0.4);
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+.mpModeBtn:hover { background: rgba(255,171,0,0.25); border-color: rgba(255,171,0,0.6); }
+
+/* ── Drawing toolbar panel ── */
+.drawToolbar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 148px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  animation: fadeIn 150ms ease;
+}
+
+.drawBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  transition: var(--transition);
+  cursor: pointer;
+}
+.drawBtn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.drawBtnActive { background: var(--bg-elevated) !important; color: var(--accent-blue) !important; }
+
+.drawBtnIcon  { font-size: 13px; width: 18px; text-align: center; flex-shrink: 0; }
+.drawBtnLabel { font-size: 11px; letter-spacing: 0.2px; }
+
+.toolDivider { height: 1px; background: var(--border); margin: 3px 0; }
+.clearBtn { color: var(--accent-red) !important; }
+.clearBtn:hover { background: var(--accent-red-dim) !important; }
+
+/* ── Text label input overlay ── */
+.textOverlayInput {
+  position: absolute;
+  z-index: 30;
+  background: rgba(14,18,24,0.92);
+  border: 1px solid var(--accent-blue);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 160px;
+  outline: none;
 }
