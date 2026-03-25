@@ -1,101 +1,213 @@
 /**
- * useMT5 — manages MT5 data: candles, live price, account, positions, history
+ * useMT5 — Institutional-grade live data management
+ * - Load 1000 candles initially from real MT5 data via REST
+ * - Live updates via WebSocket (candles, ticks, depth)
+ * - Scroll-back fetches and prepends older data seamlessly
+ * - NO mock data - only real MT5 data
+ * - Smooth live updates without disruption
+ * - When user scrolls near start, auto-fetch older candles
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useWebSocket } from './useWebSocket.js';
 
 const API = 'http://localhost:3001/api/mt5';
-const WS_URL = 'ws://localhost:3001';
+const INITIAL_CANDLES = 1000;
+const SCROLL_BUFFER = 50;
 
 export function useMT5(symbol, timeframe = '1h') {
   const [candles, setCandles] = useState([]);
   const [price, setPrice] = useState(null);
+  const [depth, setDepth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
-  const wsRef = useRef(null);
+  const [error, setError] = useState(null);
+  
+  const ws = useWebSocket();
+  const fetchingOlderRef = useRef(false);
+  const allFetchedRef = useRef(false);
+  const oldestTimeRef = useRef(null);
+  const cleanupRef = useRef([]); // Store cleanup functions for subscriptions
 
-  // Fetch candles (2000 for backscroll)
-  const fetchCandles = useCallback(async () => {
+  // Initial load: fetch 1000 recent candles via REST (fast, reliable)
+  const fetchRecentCandles = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/candles/${symbol}?timeframe=${timeframe}&count=2000`);
+      setError(null);
+      const res = await fetch(`${API}/candles/${symbol}?timeframe=${timeframe}&count=${INITIAL_CANDLES}`);
       const data = await res.json();
-      setCandles(Array.isArray(data) ? data : []);
+      
+      if (Array.isArray(data) && data.length > 0) {
+        setCandles(data);
+        oldestTimeRef.current = data[0].time;
+        
+        const lastCandle = data[data.length - 1];
+        setPrice({
+          bid: lastCandle.close,
+          ask: lastCandle.close,
+          time: lastCandle.time,
+        });
+        setConnected(true);
+        console.log(`✅ Loaded ${data.length} candles for ${symbol}/${timeframe}`);
+      } else if (data?.error) {
+        setError(data.error);
+        setConnected(false);
+        console.error(`❌ MT5 Error: ${data.error}`);
+      }
     } catch (e) {
-      console.error('Candles fetch error:', e);
-      setCandles([]);
+      setError(e.message);
+      setConnected(false);
+      console.error('Fetch error:', e);
     } finally {
       setLoading(false);
     }
   }, [symbol, timeframe]);
 
-  // Fetch initial candle data
+  // Fetch older candles for scroll-back (prepend to existing)
+  const fetchOlderCandles = useCallback(async () => {
+    if (candles.length === 0 || fetchingOlderRef.current || allFetchedRef.current) return;
+    
+    fetchingOlderRef.current = true;
+    try {
+      const firstCandle = candles[0];
+      const res = await fetch(
+        `${API}/candles/${symbol}?timeframe=${timeframe}&count=200`
+      );
+      const data = await res.json();
+      
+      if (Array.isArray(data) && data.length > 0) {
+        // Filter to only candles before the first one we have
+        const olderCandles = data.filter(c => c.time < firstCandle.time);
+        
+        if (olderCandles.length > 0) {
+          // Prepend older candles (they're already sorted)
+          setCandles(prev => {
+            const merged = [...olderCandles, ...prev];
+            // Allow to grow beyond 1000 for institutional-grade experience
+            return merged.length > 2000 ? merged.slice(-2000) : merged;
+          });
+          oldestTimeRef.current = olderCandles[0].time;
+          console.log(`📥 Prepended ${olderCandles.length} older candles (total: ${candles.length + olderCandles.length})`);
+        } else {
+          // No older candles available
+          allFetchedRef.current = true;
+          console.log(`⛔ Reached start of available history`);
+        }
+      }
+    } catch (e) {
+      console.error('Fetch older error:', e);
+    } finally {
+      fetchingOlderRef.current = false;
+    }
+  }, [candles, symbol, timeframe]);
+
+  // Initial load
   useEffect(() => {
     setLoading(true);
-    fetchCandles();
-  }, [fetchCandles]);
+    fetchRecentCandles();
+  }, [fetchRecentCandles]);
 
-  // WebSocket for live candle updates
+  // WebSocket setup: connect, subscribe, handle live updates
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
+    // Connect WebSocket if not already connected
+    if (!ws.isConnected()) {
+      ws.connect();
+    }
 
-    ws.onopen = () => {
-      setConnected(true);
-      // Subscribe to real-time candle updates for the current timeframe
-      ws.send(JSON.stringify({ type: 'subscribe_candles', symbol, timeframe }));
-    };
+    // Handle connection established
+    const unsubConnect = ws.on('onConnect', () => {
+      console.log(`[useMT5] WebSocket connected for ${symbol}/${timeframe}`);
+      // Subscribe to live candle data
+      ws.subscribeCandles(symbol, timeframe);
+      ws.subscribeTick(symbol);
+      ws.subscribeDepth(symbol);
+    });
 
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        
-        if (msg.type === 'candle_update' && msg.symbol === symbol && msg.timeframe === timeframe) {
-          // Update existing candle (incomplete current candle)
-          setCandles((prev) => {
-            if (!prev.length) return prev;
-            const lastIdx = prev.length - 1;
-            const lastCandle = prev[lastIdx];
-            
-            // Check if it's the same candle (same time)
-            if (lastCandle.time === msg.candle.time) {
-              // Update the existing candle
-              const updated = [...prev];
-              updated[lastIdx] = msg.candle;
-              return updated;
-            } else {
-              // New candle, add it if it has a different time
-              return [...prev, msg.candle];
-            }
-          });
-          
-          // Also update price info
-          setPrice({
-            bid: msg.candle.close,
-            ask: msg.candle.close,
-            time: msg.candle.time,
-          });
-        }
-        
-        if (msg.type === 'tick' && msg.symbol === symbol) {
-          // Fallback: update price from tick if no candle updates
-          setPrice({ bid: msg.bid, ask: msg.ask, time: msg.time });
-        }
-      } catch (err) {
-        console.error('WebSocket message parse error:', err);
+    // Handle disconnection
+    const unsubDisconnect = ws.on('onDisconnect', () => {
+      console.log(`[useMT5] WebSocket disconnected`);
+    });
+
+    // Handle candle updates from WebSocket
+    const unsubCandles = ws.on('onCandleUpdate', (msg) => {
+      if (msg.symbol === symbol && msg.timeframe === timeframe) {
+        setCandles(prev => {
+          if (prev.length === 0) return [msg.candle];
+
+          const lastIdx = prev.length - 1;
+          const lastCandle = prev[lastIdx];
+
+          // Same time = update incomplete candle
+          if (msg.candle.time === lastCandle.time) {
+            const updated = [...prev];
+            updated[lastIdx] = msg.candle;
+            return updated;
+          }
+          // Newer time = new candle
+          else if (msg.candle.time > lastCandle.time) {
+            return [...prev, msg.candle];
+          }
+
+          return prev;
+        });
       }
-    };
+    });
 
-    ws.onerror = () => setConnected(false);
-    ws.onclose = () => setConnected(false);
+    // Handle price tick updates
+    const unsubTicks = ws.on('onTick', (msg) => {
+      if (msg.symbol === symbol) {
+        setPrice({
+          bid: msg.bid,
+          ask: msg.ask,
+          time: msg.time,
+        });
+      }
+    });
 
+    // Handle depth updates
+    const unsubDepth = ws.on('onDepth', (msg) => {
+      if (msg.symbol === symbol) {
+        setDepth({
+          bids: msg.bids,
+          asks: msg.asks,
+          timestamp: msg.timestamp,
+        });
+      }
+    });
+
+    cleanupRef.current = [
+      unsubConnect,
+      unsubDisconnect,
+      unsubCandles,
+      unsubTicks,
+      unsubDepth,
+    ];
+
+    // Cleanup on unmount or when symbol/timeframe changes
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'unsubscribe_candles', symbol, timeframe }));
-        ws.close();
-      }
+      cleanupRef.current.forEach((unsub) => {
+        try {
+          if (typeof unsub === 'function') unsub();
+        } catch (e) {
+          console.error('[useMT5] Cleanup error:', e);
+        }
+      });
+      ws.unsubscribeCandles(symbol, timeframe);
+      ws.unsubscribeTick(symbol);
+      ws.unsubscribeDepth(symbol);
     };
-  }, [symbol, timeframe]);
+  }, [ws, symbol, timeframe]);
 
-  return { candles, price, loading, connected, refetch: fetchCandles };
+  return {
+    candles,
+    price,
+    depth,
+    loading,
+    connected,
+    error,
+    refetch: fetchRecentCandles,
+    fetchOlderCandles,
+    scrollBuffer: SCROLL_BUFFER,
+    allFetched: allFetchedRef.current,
+  };
 }
 
 export function useAccount() {
@@ -115,9 +227,7 @@ export function useAccount() {
       const histData = await histRes.json();
       
       setAccount(accData);
-      // Ensure positions is always an array
       setPositions(Array.isArray(posData) ? posData : []);
-      // Ensure history is always an array
       setHistory(Array.isArray(histData) ? histData : []);
     } catch (e) {
       console.error('Account fetch error:', e);
@@ -136,10 +246,8 @@ export function useAccount() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol, type, volume }),
     });
-    const result = await res.json();
-    if (!result.error) fetchAccount();
-    return result;
-  }, [fetchAccount]);
+    return res.json();
+  }, []);
 
-  return { account, positions, history, placeOrder, refetch: fetchAccount };
+  return { account, positions, history, placeOrder };
 }

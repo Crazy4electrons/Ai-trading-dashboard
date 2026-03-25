@@ -14,11 +14,21 @@ router.get('/account', async (req, res) => {
 
 router.get('/candles/:symbol', async (req, res) => {
   const { symbol } = req.params;
-  const { timeframe = '1h', count = 2000 } = req.query;
-  // Cap at 5000 candles max to avoid memory issues
-  const maxCount = Math.min(parseInt(count), 5000);
+  const { timeframe = '1h', count, offset = 0, limit = 1000 } = req.query;
   
-  // Try to get real candles from MT5
+  // Support legacy 'count' parameter for backward compatibility
+  let maxCount = parseInt(count) || parseInt(limit);
+  maxCount = Math.min(maxCount, 5000); // Cap at 5000 to avoid memory issues
+  
+  const pageOffset = Math.max(0, parseInt(offset));
+  
+  // If using pagination mode (offset specified or limit is explicitly set)
+  if (req.query.offset || req.query.limit) {
+    const result = await MT5Service.getCandlesPaginated(symbol, timeframe, pageOffset, maxCount);
+    return res.json(result);
+  }
+  
+  // Legacy mode: return raw candle array
   const candles = await MT5Service.getCandles(symbol, timeframe, maxCount);
   
   // If MT5 not connected or error, use mock candles for demo mode
@@ -63,6 +73,54 @@ router.post('/connect', async (req, res) => {
 
 router.get('/status', (req, res) => {
   res.json({ connected: MT5Service.isConnected() });
+});
+
+// Get market depth (order book)
+router.get('/depth/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    if (!symbol) return res.status(400).json({ error: 'Symbol required' });
+
+    const result = await MT5Service.getDepth(symbol);
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get symbol information
+router.get('/symbol/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    if (!symbol) return res.status(400).json({ error: 'Symbol required' });
+
+    const result = await MT5Service.getSymbolInfo(symbol);
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all available symbols
+router.get('/symbols', async (req, res) => {
+  try {
+    const result = await MT5Service.getSymbols();
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 export default router;

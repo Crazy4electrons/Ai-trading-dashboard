@@ -1,13 +1,16 @@
 /**
  * TradingChart — candlestick chart with:
+ *  - Order book depth visualization (left side)
+ *  - Professional candlestick chart (center)
  *  - SVG drawing tools (trendline, hline, ray, rectangle, fib, text)
- *  - Market Profile (left-side TPO/volume histogram with POC line)
+ *  - Market Profile (right side volume profile with POC line)
  *  - Market Sessions (dotted vertical lines with labels)
  */
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { createChart, CrosshairMode } from 'lightweight-charts';
 import { useApp } from '../context/AppContext';
 import { findSymbol, TIMEFRAMES } from '../utils/symbols';
+import { DepthVisualization } from './DepthVisualization';
 import styles from './TradingChart.module.css';
 
 /* ── Drawing tools ── */
@@ -101,7 +104,7 @@ function sliceForProfile(candles, mode) {
 
 /* ═══════════════════════════════════════════════════════════════ */
 export default function TradingChart({
-  candles, price, onTimeframeChange, timeframe, compositeSignal, onBuy, onSell,
+  candles, price, depth, onTimeframeChange, timeframe, compositeSignal, onBuy, onSell, fetchOlderCandles, scrollBuffer = 50,
 }) {
   const chartRef  = useRef(null);
   const canvasRef = useRef(null);
@@ -109,6 +112,7 @@ export default function TradingChart({
   const seriesRef = useRef(null);
   const { focusedSymbol } = useApp();
   const sym = findSymbol(focusedSymbol);
+  const fetchingOlderRef = useRef(false); // Single flag to prevent concurrent fetches
 
   /* Drawing */
   const [activeTool,  setActiveTool]  = useState(null);
@@ -161,7 +165,23 @@ export default function TradingChart({
 
     /* Re-render SVG overlays on any chart change */
     const bump = () => setRenderTick(n => n + 1);
-    chart.timeScale().subscribeVisibleLogicalRangeChange(bump);
+    
+    /* Detect scroll-back: when user scrolls to see older candles, fetch buffer */
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (range && candles.length > 0 && fetchOlderCandles && !fetchingOlderRef.current) {
+        const fromIdx = range.from; // Logical index of leftmost visible candle
+        // If viewing within scrollBuffer of oldest data, fetch more
+        if (fromIdx < scrollBuffer) {
+          console.log(`📍 Scroll-back: ${Math.round(fromIdx)} candles from start, fetching older...`);
+          fetchingOlderRef.current = true;
+          fetchOlderCandles().finally(() => {
+            fetchingOlderRef.current = false;
+          });
+        }
+      }
+      bump();
+    });
+    
     chart.timeScale().subscribeVisibleTimeRangeChange(bump);
     chart.subscribeCrosshairMove(bump);
 
@@ -364,8 +384,17 @@ export default function TradingChart({
         </div>
       </div>
 
-      {/* ── Chart body: profile sidebar + canvas ── */}
+      {/* ── Chart body: depth + chart + profile sidebar ── */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
+
+        {/* ── Order book depth visualization (optional left panel) ── */}
+        {depth && (
+          <DepthVisualization
+            depth={depth}
+            width={80}
+            height={canvasSize.h}
+          />
+        )}
 
         {/* ── Market Profile left sidebar ── */}
         {showMP && (

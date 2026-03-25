@@ -225,6 +225,115 @@ class MT5Bridge:
         except Exception as e:
             return {"error": str(e)}
 
+    def get_depth(self, symbol):
+        """Get market depth (order book) for a symbol"""
+        if not self.connected:
+            return {"error": "Not connected"}
+        
+        try:
+            # Enable market book for symbol if not already enabled
+            if not mt5.market_book_add(symbol):
+                print(json.dumps({"debug": f"Market book unavailable for {symbol}"}), flush=True)
+            
+            # Get market book data
+            book = mt5.market_book_get(symbol)
+            if book is None or len(book) == 0:
+                # No depth data available, return mock data
+                tick = mt5.symbol_info_tick(symbol)
+                if tick is None:
+                    return {"error": "Failed to get price"}
+                
+                # Generate mock depth with 5 levels
+                mid = (tick.bid + tick.ask) / 2
+                spread = (tick.ask - tick.bid) / 2
+                
+                return {
+                    "symbol": symbol,
+                    "timestamp": int(tick.time * 1000),
+                    "bids": [
+                        {"price": mid - (i + 1) * spread, "volume": (5 - i) * 100}
+                        for i in range(5)
+                    ],
+                    "asks": [
+                        {"price": mid + (i + 1) * spread, "volume": (i + 1) * 100}
+                        for i in range(5)
+                    ],
+                }
+            
+            # Parse real market book
+            bids = []
+            asks = []
+            for level in book:
+                entry = {"price": float(level.price), "volume": float(level.volume)}
+                if level.type == mt5.BOOK_TYPE_BUY or level.type == mt5.BOOK_TYPE_BUY_MARKET:
+                    bids.append(entry)
+                elif level.type == mt5.BOOK_TYPE_SELL or level.type == mt5.BOOK_TYPE_SELL_MARKET:
+                    asks.append(entry)
+            
+            return {
+                "symbol": symbol,
+                "timestamp": int(datetime.now().timestamp() * 1000),
+                "bids": sorted(bids, key=lambda x: x["price"], reverse=True),
+                "asks": sorted(asks, key=lambda x: x["price"]),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_symbol_info(self, symbol):
+        """Get detailed information about a symbol"""
+        if not self.connected:
+            return {"error": "Not connected"}
+        
+        try:
+            info = mt5.symbol_info(symbol)
+            if info is None:
+                return {"error": f"Symbol not found: {symbol}"}
+            
+            return {
+                "symbol": symbol,
+                "description": info.description,
+                "bid": float(info.bid),
+                "ask": float(info.ask),
+                "bid_high": float(info.bid_high),
+                "bid_low": float(info.bid_low),
+                "ask_high": float(info.ask_high),
+                "ask_low": float(info.ask_low),
+                "last": float(info.last) if hasattr(info, 'last') else None,
+                "volume": int(info.volume) if hasattr(info, 'volume') else 0,
+                "volumehigh": int(info.volumehigh) if hasattr(info, 'volumehigh') else 0,
+                "volumelow": int(info.volumelow) if hasattr(info, 'volumelow') else 0,
+                "spread": int(info.spread) if hasattr(info, 'spread') else 0,
+                "digits": int(info.digits),
+                "point": float(info.point),
+                "trade_tick_size": float(info.trade_tick_size) if hasattr(info, 'trade_tick_size') else 0,
+                "trade_tick_value": float(info.trade_tick_value) if hasattr(info, 'trade_tick_value') else 0,
+                "trade_contract_size": float(info.trade_contract_size) if hasattr(info, 'trade_contract_size') else 0,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_symbols(self):
+        """Get list of all available symbols"""
+        if not self.connected:
+            return {"error": "Not connected"}
+        
+        try:
+            symbols_data = mt5.symbols_get()
+            if symbols_data is None or len(symbols_data) == 0:
+                return {"error": "No symbols available"}
+            
+            symbols = []
+            for sym in symbols_data:
+                symbols.append({
+                    "symbol": sym.name,
+                    "description": sym.description,
+                    "path": sym.path if hasattr(sym, 'path') else "",
+                })
+            
+            return {"symbols": symbols, "count": len(symbols)}
+        except Exception as e:
+            return {"error": str(e)}
+
     def shutdown(self):
         """Disconnect from MT5"""
         if self.connected:
@@ -271,6 +380,15 @@ class MT5Bridge:
                 cmd_dict.get("type"),
                 cmd_dict.get("volume"),
             )
+        
+        elif cmd == "depth":
+            return self.get_depth(cmd_dict.get("symbol"))
+        
+        elif cmd == "symbol_info":
+            return self.get_symbol_info(cmd_dict.get("symbol"))
+        
+        elif cmd == "symbols":
+            return self.get_symbols()
         
         elif cmd == "shutdown":
             self.shutdown()

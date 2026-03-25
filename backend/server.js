@@ -31,6 +31,7 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 const clients = new Set();
 const subscriptions = new Map(); // clientId -> Set of symbols
 const candleSubscriptions = new Map(); // clientId -> Set of {symbol:timeframe}
+const depthSubscriptions = new Map(); // clientId -> Set of symbols
 
 wss.on('connection', (ws) => {
   const id = Math.random().toString(36).slice(2);
@@ -38,6 +39,7 @@ wss.on('connection', (ws) => {
   clients.add(ws);
   subscriptions.set(id, new Set());
   candleSubscriptions.set(id, new Set());
+  depthSubscriptions.set(id, new Set());
 
   ws.on('message', async (raw) => {
     try {
@@ -56,6 +58,12 @@ wss.on('connection', (ws) => {
       } else if (msg.type === 'unsubscribe_candles') {
         const key = `${msg.symbol}:${msg.timeframe}`;
         candleSubscriptions.get(id).delete(key);
+      } else if (msg.type === 'subscribe_depth') {
+        // Subscribe to order book depth updates
+        depthSubscriptions.get(id).add(msg.symbol);
+        ws.send(JSON.stringify({ type: 'depth_subscribed', symbol: msg.symbol }));
+      } else if (msg.type === 'unsubscribe_depth') {
+        depthSubscriptions.get(id).delete(msg.symbol);
       } else if (msg.type === 'update_settings') {
         // Re-init MT5 with new credentials
         await MT5Service.init(msg.account, msg.password, msg.server);
@@ -70,6 +78,7 @@ wss.on('connection', (ws) => {
     clients.delete(ws);
     subscriptions.delete(id);
     candleSubscriptions.delete(id);
+    depthSubscriptions.delete(id);
   });
 });
 
@@ -147,6 +156,40 @@ MT5Service.onCandleUpdate?.((symbol, timeframe, candle) => {
     }
   }
 });
+
+// Broadcast depth updates to subscribed clients (every 500ms)
+const depthCache = new Map(); // symbol -> {data, timestamp}
+const depthUpdateInterval = 500; // ms
+
+setInterval(async () => {
+  // Collect all unique symbols with depth subscribers
+  const depthSymbols = new Set();
+  for (const syms of depthSubscriptions.values()) {
+    syms.forEach((s) => depthSymbols.add(s));
+  }
+
+  // Fetch and broadcast depth for each symbol
+  for (const symbol of depthSymbols) {
+    try {
+      const depth = await MT5Service.getDepth(symbol);
+      if (depth && !depth.error) {
+        depthCache.set(symbol, depth);
+
+        // Broadcast to all subscribed clients
+        for (const [id, syms] of depthSubscriptions.entries()) {
+          if (syms.has(symbol)) {
+            const ws = [...clients].find((c) => c.id === id);
+            if (ws?.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'depth', symbol, ...depth }));
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`Failed to fetch depth for ${symbol}:`, e.message);
+    }
+  }
+}, depthUpdateInterval);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => console.log(`Server running on :${PORT}`));

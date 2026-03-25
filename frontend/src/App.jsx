@@ -32,7 +32,7 @@ export default function App() {
   const [accountsWidth, setAccountsWidth] = useState(260);
   const prevPriceRef = useRef(null);
 
-  const { candles, price, loading } = useMT5(focusedSymbol, timeframe);
+  const { candles, price, depth, loading, fetchOlderCandles, scrollBuffer } = useMT5(focusedSymbol, timeframe);
   const { placeOrder }              = useAccount();
 
   const currentPrice = price?.bid ?? candles?.[candles.length - 1]?.close;
@@ -125,11 +125,14 @@ export default function App() {
             <TradingChart
               candles={candles}
               price={price}
+              depth={depth}
               timeframe={timeframe}
               onTimeframeChange={setTimeframe}
               compositeSignal={compositeSignal}
               onBuy={()  => setOrderModal({ type: 'buy' })}
               onSell={() => setOrderModal({ type: 'sell' })}
+              fetchOlderCandles={fetchOlderCandles}
+              scrollBuffer={scrollBuffer}
             />
             <IndicatorPills indicators={indicators} />
             <TabsSection indicators={indicators} candles={candles} />

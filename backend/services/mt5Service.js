@@ -192,6 +192,42 @@ function sendCommand(cmd) {
   });
 }
 
+let candleCache = new Map(); // symbol:timeframe -> {candles: [...], timestamp}
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHED_CANDLES = 10000; // Per symbol/timeframe
+
+function getCacheKey(symbol, timeframe) {
+  return `${symbol}:${timeframe}`;
+}
+
+function getCachedCandles(symbol, timeframe) {
+  const key = getCacheKey(symbol, timeframe);
+  const cached = candleCache.get(key);
+  
+  // Return if cache exists and not expired
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.candles;
+  }
+  
+  // Invalidate expired cache
+  if (cached) candleCache.delete(key);
+  return null;
+}
+
+function setCachedCandles(symbol, timeframe, candles) {
+  const key = getCacheKey(symbol, timeframe);
+  candleCache.set(key, {
+    candles,
+    timestamp: Date.now(),
+  });
+  
+  // Implement simple LRU: if cache gets too large, remove oldest entries
+  if (candleCache.size > 20) {
+    const oldestKey = candleCache.keys().next().value;
+    candleCache.delete(oldestKey);
+  }
+}
+
 export const MT5Service = {
   /** Initialize MT5 connection with account credentials */
   async init(account, password, server = 'MetaQuotes-Demo') {
@@ -230,7 +266,7 @@ export const MT5Service = {
     if (!connected) {
       return { error: 'Not connected to MT5. Call /connect first.' };
     }
-    return await sendCommand({ cmd: 'account_info' });
+    return await sendCommand({ cmd: 'account' });
   },
 
   /** Get candles for a symbol */
@@ -239,11 +275,69 @@ export const MT5Service = {
       return { error: 'Not connected to MT5. Call /connect first.' };
     }
     return await sendCommand({
-      cmd: 'get_candles',
+      cmd: 'candles',
       symbol,
       timeframe,
       count,
     });
+  },
+
+  /** Get paginated candles with caching for scroll-back support */
+  async getCandlesPaginated(symbol, timeframe = '1h', offset = 0, limit = 1000) {
+    if (!connected) {
+      return { error: 'Not connected to MT5. Call /connect first.' };
+    }
+
+    // Try to use cache first
+    let allCandles = getCachedCandles(symbol, timeframe);
+
+    // If not in cache or cache is small, fetch fresh data
+    if (!allCandles || allCandles.length < MAX_CACHED_CANDLES) {
+      // Fetch more candles than the limit to build up cache
+      const fetchCount = Math.max(limit * 3, 3000);
+      const freshCandles = await sendCommand({
+        cmd: 'candles',
+        symbol,
+        timeframe,
+        count: fetchCount,
+      });
+
+      if (Array.isArray(freshCandles)) {
+        // Merge with existing cache (newest first)
+        if (allCandles) {
+          // Keep only unique candles, combine, and sort by time
+          const combined = [...freshCandles, ...allCandles];
+          const uniqueMap = new Map();
+          combined.forEach((c) => {
+            uniqueMap.set(c.time, c);
+          });
+          allCandles = Array.from(uniqueMap.values()).sort((a, b) => a.time - b.time);
+          // Cap at MAX_CACHED_CANDLES
+          if (allCandles.length > MAX_CACHED_CANDLES) {
+            allCandles = allCandles.slice(-MAX_CACHED_CANDLES);
+          }
+        } else {
+          allCandles = freshCandles;
+        }
+        setCachedCandles(symbol, timeframe, allCandles);
+      } else if (freshCandles.error) {
+        return freshCandles;
+      }
+    }
+
+    // Paginate the results
+    const total = allCandles.length;
+    const start = Math.max(0, offset);
+    const end = Math.min(start + limit, total);
+    const pageCandles = allCandles.slice(start, end);
+
+    return {
+      candles: pageCandles,
+      offset,
+      limit,
+      total,
+      hasMore: end < total,
+    };
   },
 
   /** Get current price for a symbol */
@@ -252,8 +346,40 @@ export const MT5Service = {
       return { error: 'Not connected to MT5. Call /connect first.' };
     }
     return await sendCommand({
-      cmd: 'get_price',
+      cmd: 'price',
       symbol,
+    });
+  },
+
+  /** Get market depth (order book) for a symbol */
+  async getDepth(symbol) {
+    if (!connected) {
+      return { error: 'Not connected to MT5. Call /connect first.' };
+    }
+    return await sendCommand({
+      cmd: 'depth',
+      symbol,
+    });
+  },
+
+  /** Get symbol information */
+  async getSymbolInfo(symbol) {
+    if (!connected) {
+      return { error: 'Not connected to MT5. Call /connect first.' };
+    }
+    return await sendCommand({
+      cmd: 'symbol_info',
+      symbol,
+    });
+  },
+
+  /** Get all available symbols */
+  async getSymbols() {
+    if (!connected) {
+      return { error: 'Not connected to MT5. Call /connect first.' };
+    }
+    return await sendCommand({
+      cmd: 'symbols',
     });
   },
 
@@ -262,7 +388,7 @@ export const MT5Service = {
     if (!connected) {
       return { error: 'Not connected to MT5. Call /connect first.' };
     }
-    return await sendCommand({ cmd: 'get_positions' });
+    return await sendCommand({ cmd: 'positions' });
   },
 
   /** Get trade history */
@@ -271,7 +397,7 @@ export const MT5Service = {
       return { error: 'Not connected to MT5. Call /connect first.' };
     }
     return await sendCommand({
-      cmd: 'get_history',
+      cmd: 'history',
       from_date: fromDate,
       to_date: toDate,
       days,
@@ -284,7 +410,7 @@ export const MT5Service = {
       return { error: 'Not connected to MT5. Call /connect first.' };
     }
     return await sendCommand({
-      cmd: 'place_order',
+      cmd: 'order',
       symbol,
       type,
       volume,
