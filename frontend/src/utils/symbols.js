@@ -151,3 +151,37 @@ export const MOCK_PRICES = {
   XAUUSD: 2052.3, XAGUSD: 23.1, USOIL: 78.45,
   AAPL: 185.6, MSFT: 415.2, TSLA: 172.4, NVDA: 875.3,
 };
+
+/** Format price with appropriate decimal places based on symbol type */
+export function formatPrice(price, symbol = '') {
+  if (price === null || price === undefined) return '-.--';
+  
+  const normalizedSymbol = String(symbol).toUpperCase();
+  
+  // Forex: 5 decimals (JPY crosses might use 3, but 5 is standard)
+  const forexSymbols = Object.values(SYMBOLS.forex || []).map(s => s.symbol);
+  const isForex = forexSymbols.includes(normalizedSymbol);
+  
+  // Crypto: Use server precision, cap at 8 decimals
+  const cryptoSymbols = Object.values(SYMBOLS.crypto || []).map(s => s.symbol);
+  const isCrypto = cryptoSymbols.includes(normalizedSymbol);
+  
+  // Stocks/Indices: 2 decimals
+  const stocksSymbols = Object.values(SYMBOLS.stocks || []).map(s => s.symbol);
+  const isStock = stocksSymbols.includes(normalizedSymbol);
+  
+  if (isForex) {
+    return parseFloat(price).toFixed(5);
+  } else if (isCrypto) {
+    // Show natural precision for crypto (2-8 decimals based on price)
+    if (price >= 100) return parseFloat(price).toFixed(2);
+    if (price >= 10) return parseFloat(price).toFixed(3);
+    if (price >= 1) return parseFloat(price).toFixed(4);
+    return parseFloat(price).toFixed(5);
+  } else if (isStock) {
+    return parseFloat(price).toFixed(2);
+  }
+  
+  // Default: 5 decimals (forex-style for unknown)
+  return parseFloat(price).toFixed(5);
+}

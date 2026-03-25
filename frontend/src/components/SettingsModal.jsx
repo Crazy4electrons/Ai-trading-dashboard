@@ -1,19 +1,18 @@
 /**
- * SettingsModal — configures MT5, News API, LLM provider, and theme
+ * SettingsModal — configures News API, LLM provider, and theme
+ * MT5 login is now handled by the dedicated LoginScreen component
  */
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import styles from './SettingsModal.module.css';
 
-const SECTIONS = ['account', 'api keys', 'llm provider', 'theme'];
+const SECTIONS = ['api keys', 'llm provider', 'theme'];
 
 export default function SettingsModal() {
   const { settingsOpen, setSettingsOpen, settings, saveSettings } = useApp();
-  const [section, setSection] = useState('account');
+  const [section, setSection] = useState('api keys');
   const [form, setForm] = useState({ ...settings });
   const [saved, setSaved] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
 
   if (!settingsOpen) return null;
 
@@ -23,28 +22,6 @@ export default function SettingsModal() {
     saveSettings(form);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  };
-
-  const testMT5 = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const res = await fetch('http://localhost:3001/api/mt5/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          account: form.mt5Account, 
-          password: form.mt5Password,
-          server: form.mt5Server || 'MetaQuotes-Demo',
-        }),
-      });
-      const data = await res.json();
-      setTestResult(data.success ? { ok: true, msg: 'Connected successfully!' } : { ok: false, msg: data.error });
-    } catch {
-      setTestResult({ ok: false, msg: 'Backend not reachable. Start backend first.' });
-    } finally {
-      setTesting(false);
-    }
   };
 
   return (
@@ -73,30 +50,6 @@ export default function SettingsModal() {
 
           {/* Content */}
           <div className={styles.content}>
-            {section === 'account' && (
-              <Section title="MT5 Account" subtitle="Connect to MetaTrader 5 Terminal">
-                <Field label="MT5 Account Number" value={form.mt5Account} onChange={(v) => update('mt5Account', v)} placeholder="Your MT5 account number" />
-                <Field label="MT5 Password" type="password" value={form.mt5Password} onChange={(v) => update('mt5Password', v)} placeholder="Your MT5 terminal password" />
-                <Field label="MT5 Server" value={form.mt5Server} onChange={(v) => update('mt5Server', v)} placeholder="e.g., MetaQuotes-Demo (optional)" />
-                <div className={styles.testRow}>
-                  <button className={styles.testBtn} onClick={testMT5} disabled={testing}>
-                    {testing ? 'Testing…' : 'Test Connection'}
-                  </button>
-                  {testResult && (
-                    <span className={testResult.ok ? styles.ok : styles.err}>
-                      {testResult.ok ? '✓' : '✗'} {testResult.msg}
-                    </span>
-                  )}
-                </div>
-                <Note>
-                  Requires MetaTrader 5 terminal to be running on this machine. Python library will connect to your MT5 terminal via the MetaApi protocol. You can find your account number in MT5 → Tools → Options → Account.
-                </Note>
-                <Note style={{ color: '#ffab00', marginTop: 12 }}>
-                  <strong>Setup:</strong> Install Python 3.x and run: <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>pip install MetaTrader5</code>
-                </Note>
-              </Section>
-            )}
-
             {section === 'api keys' && (
               <Section title="API Keys" subtitle="Third-party data sources">
                 <Field

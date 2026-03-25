@@ -4,7 +4,22 @@
  */
 import { useEffect, useRef, useCallback } from 'react';
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
+// Detect WebSocket URL from environment or build from window location
+const getWSUrl = () => {
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+  // In development, backend is at localhost:3001
+  // In production, use same protocol and host as frontend
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname === 'localhost' ? 'localhost:3001' : window.location.host;
+    return `${protocol}//${host}/api/mt5/ws`;
+  }
+  return 'ws://localhost:3001/api/mt5/ws';
+};
+
+const WS_URL = getWSUrl();
 
 // Exponential backoff: start at 1s, max 30s
 const getBackoffDelay = (attempt) => Math.min(1000 * Math.pow(2, attempt), 30000);
@@ -27,6 +42,17 @@ export function useWebSocket() {
     onError: [],
   });
 
+  // Helper to safely send WebSocket messages with state check
+  const safeSend = useCallback((msg) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify(msg));
+      } catch (e) {
+        console.error('[WS] Error sending message:', e);
+      }
+    }
+  }, []);
+
   // Establish WebSocket connection
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -41,18 +67,18 @@ export function useWebSocket() {
         console.log('[WS] Connected');
         attemptsRef.current = 0; // Reset backoff counter
 
-        // Re-subscribe to previous subscriptions
+        // Re-subscribe to previous subscriptions with safe send
         subscriptionsRef.current.ticks.forEach((symbol) => {
-          wsRef.current.send(JSON.stringify({ type: 'subscribe', symbol }));
+          safeSend({ type: 'subscribe', symbol });
         });
 
         subscriptionsRef.current.candles.forEach((key) => {
           const [symbol, timeframe] = key.split(':');
-          wsRef.current.send(JSON.stringify({ type: 'subscribe_candles', symbol, timeframe }));
+          safeSend({ type: 'subscribe_candles', symbol, timeframe });
         });
 
         subscriptionsRef.current.depth.forEach((symbol) => {
-          wsRef.current.send(JSON.stringify({ type: 'subscribe_depth', symbol }));
+          safeSend({ type: 'subscribe_depth', symbol });
         });
 
         // Emit connect callbacks

@@ -8,9 +8,30 @@ import styles from './AccountPanel.module.css';
 export default function AccountPanel({ visible }) {
   const [mainTab, setMainTab] = useState('account');
   const [ordersTab, setOrdersTab] = useState('open');
-  const { account, positions, history, placeOrder } = useAccount();
+  const { account, positions, history, loading, error } = useAccount();
 
   if (!visible) return null;
+
+  if (error) {
+    return (
+      <aside className={styles.panel}>
+        <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+          <p>⚠ Cannot connect to account</p>
+          <p style={{ fontSize: 11, marginTop: 8 }}>{error}</p>
+        </div>
+      </aside>
+    );
+  }
+
+  if (loading && !account) {
+    return (
+      <aside className={styles.panel}>
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-secondary)' }}>
+          <p style={{ fontSize: 12 }}>Loading account…</p>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className={styles.panel}>

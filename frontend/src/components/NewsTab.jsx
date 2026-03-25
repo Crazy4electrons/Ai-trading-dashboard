@@ -8,9 +8,9 @@ import styles from './NewsTab.module.css';
 
 export default function NewsTab() {
   const { focusedSymbol, settings } = useApp();
-  const { news, loading, fetchNews } = useNews(focusedSymbol, settings.newsApiKey);
+  const { news, loading, error, fetchNews } = useNews(focusedSymbol, settings.newsApiKey);
 
-  useEffect(() => { fetchNews(); }, [focusedSymbol]);
+  useEffect(() => { fetchNews(); }, [focusedSymbol, settings.newsApiKey, fetchNews]);
 
   const counts = { bullish: 0, bearish: 0, neutral: 0 };
   news.forEach((n) => counts[n.sentiment]++);
@@ -45,8 +45,14 @@ export default function NewsTab() {
       </div>
 
       {/* News list */}
-      {loading && !news.length ? (
+      {error && !news.length ? (
+        <div className={styles.loader} style={{ color: 'var(--accent-red)' }}>
+          ⚠ {error}
+        </div>
+      ) : loading && !news.length ? (
         <div className={styles.loader}>Loading news...</div>
+      ) : news.length === 0 ? (
+        <div className={styles.loader}>No news available for {focusedSymbol}</div>
       ) : (
         <div className={styles.list}>
           {news.map((item) => (

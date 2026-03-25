@@ -6,7 +6,20 @@ import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import styles from './AIAnalysisTab.module.css';
 
-const API = 'http://localhost:3001/api/ai';
+// Detect API URL from environment or build from window location
+const getAPIUrl = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol;
+    const host = window.location.hostname === 'localhost' ? 'localhost:3001' : window.location.host;
+    return `${protocol}//${host}/api/ai`;
+  }
+  return 'http://localhost:3001/api/ai';
+};
+
+const API = getAPIUrl();
 
 export default function AIAnalysisTab({ indicators, candles, news }) {
   const { focusedSymbol, settings } = useApp();
@@ -20,9 +33,13 @@ export default function AIAnalysisTab({ indicators, candles, news }) {
     setError(null);
 
     try {
+      const token = localStorage.getItem('tm_token');
       const res = await fetch(`${API}/analyze`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({
           symbol: focusedSymbol,
           timeframe: subTab,
@@ -32,11 +49,18 @@ export default function AIAnalysisTab({ indicators, candles, news }) {
           provider: settings.llmProvider || 'anthropic',
           apiKey: settings.llmProvider === 'openai' ? settings.openaiKey : settings.anthropicKey,
         }),
+        signal: AbortSignal.timeout(30000),
       });
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
+      
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setAnalyses((a) => ({ ...a, [subTab]: data.analysis }));
     } catch (e) {
+      console.error('Analysis error:', e);
       setError(e.message);
     } finally {
       setLoading((l) => ({ ...l, [subTab]: false }));

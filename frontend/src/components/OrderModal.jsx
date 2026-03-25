@@ -11,10 +11,18 @@ export default function OrderModal({ symbol, type, onConfirm, onClose }) {
 
   const handleSubmit = async () => {
     setSubmitting(true);
-    const res = await onConfirm(symbol, type, parseFloat(volume));
-    setResult(res);
-    setSubmitting(false);
-    if (!res?.error) setTimeout(onClose, 1500);
+    try {
+      const res = await onConfirm(symbol, type, parseFloat(volume));
+      setResult(res);
+      if (!res?.error) {
+        setTimeout(onClose, 1500);
+      }
+    } catch (e) {
+      // onConfirm may throw; normalize to result shape expected by UI
+      setResult({ error: e?.message || String(e) });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const isBuy = type === 'buy';

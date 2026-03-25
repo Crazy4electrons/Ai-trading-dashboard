@@ -10,9 +10,26 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useWebSocket } from './useWebSocket.js';
 
-const API = 'http://localhost:3001/api/mt5';
+// Detect API URL from environment or build from window location
+const getAPIUrl = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // In development, backend is at localhost:3001
+  // In production, use same protocol and host as frontend
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol;
+    const host = window.location.hostname === 'localhost' ? 'localhost:3001' : window.location.host;
+    return `${protocol}//${host}/api/mt5`;
+  }
+  return 'http://localhost:3001/api/mt5';
+};
+
+const API = getAPIUrl();
 const INITIAL_CANDLES = 1000;
 const SCROLL_BUFFER = 50;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000;
 
 export function useMT5(symbol, timeframe = '1h') {
   const [candles, setCandles] = useState([]);
@@ -32,30 +49,66 @@ export function useMT5(symbol, timeframe = '1h') {
   const fetchRecentCandles = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API}/candles/${symbol}?timeframe=${timeframe}&count=${INITIAL_CANDLES}`);
-      const data = await res.json();
       
-      if (Array.isArray(data) && data.length > 0) {
-        setCandles(data);
-        oldestTimeRef.current = data[0].time;
-        
-        const lastCandle = data[data.length - 1];
-        setPrice({
-          bid: lastCandle.close,
-          ask: lastCandle.close,
-          time: lastCandle.time,
-        });
-        setConnected(true);
-        console.log(`✅ Loaded ${data.length} candles for ${symbol}/${timeframe}`);
-      } else if (data?.error) {
-        setError(data.error);
-        setConnected(false);
-        console.error(`❌ MT5 Error: ${data.error}`);
+      // Get auth token
+      const token = localStorage.getItem('tm_token');
+      
+      // Retry logic with exponential backoff
+      let lastError = null;
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          const headers = {
+            'Authorization': token ? `Bearer ${token}` : '',
+          };
+          
+          const res = await fetch(`${API}/candles/${symbol}?timeframe=${timeframe}&count=${INITIAL_CANDLES}`, {
+            headers,
+            signal: AbortSignal.timeout(10000),
+          });
+          
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          }
+          
+          const data = await res.json();
+          console.log('[useMT5] Response:', { status: res.status, candlesCount: data?.candles?.length, error: data?.error });
+          
+          if (data?.candles && Array.isArray(data.candles) && data.candles.length > 0) {
+            setCandles(data.candles);
+            oldestTimeRef.current = data.candles[0].time;
+            
+            const lastCandle = data.candles[data.candles.length - 1];
+            setPrice({
+              bid: lastCandle.close,
+              ask: lastCandle.close,
+              time: lastCandle.time,
+            });
+            setConnected(true);
+            console.log(`✅ Loaded ${data.candles.length} candles for ${symbol}/${timeframe}`);
+            return; // Success - exit retry loop
+          } else if (data?.error) {
+            setError(data.error);
+            setConnected(false);
+            console.error(`❌ MT5 Error: ${data.error}`);
+            return; // Don't retry on application errors
+          }
+        } catch (e) {
+          lastError = e;
+          console.warn(`Fetch attempt ${attempt + 1} failed: ${e.message}`);
+          
+          if (attempt < MAX_RETRIES - 1) {
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * Math.pow(2, attempt)));
+          }
+        }
       }
-    } catch (e) {
-      setError(e.message);
-      setConnected(false);
-      console.error('Fetch error:', e);
+      
+      // All retries failed
+      if (lastError) {
+        setError(lastError.message);
+        setConnected(false);
+        console.error('Failed to load candles after all retries:', lastError);
+      }
     } finally {
       setLoading(false);
     }
@@ -67,15 +120,21 @@ export function useMT5(symbol, timeframe = '1h') {
     
     fetchingOlderRef.current = true;
     try {
+      const token = localStorage.getItem('tm_token');
       const firstCandle = candles[0];
       const res = await fetch(
-        `${API}/candles/${symbol}?timeframe=${timeframe}&count=200`
+        `${API}/candles/${symbol}?timeframe=${timeframe}&count=200`,
+        {
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+          },
+        }
       );
       const data = await res.json();
       
-      if (Array.isArray(data) && data.length > 0) {
+      if (data?.candles && Array.isArray(data.candles) && data.candles.length > 0) {
         // Filter to only candles before the first one we have
-        const olderCandles = data.filter(c => c.time < firstCandle.time);
+        const olderCandles = data.candles.filter(c => c.time < firstCandle.time);
         
         if (olderCandles.length > 0) {
           // Prepend older candles (they're already sorted)
@@ -214,40 +273,131 @@ export function useAccount() {
   const [account, setAccount] = useState(null);
   const [positions, setPositions] = useState([]);
   const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  // Throttled polling: avoid concurrent fetches and backoff on errors
+  const inFlightRef = useRef(null);
+  const pollTimerRef = useRef(null);
+  const pollIntervalRef = useRef(10000); // default 10s
+  const consecutiveErrorsRef = useRef(0);
+
+  const clearPollTimer = () => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  const scheduleNextPoll = () => {
+    clearPollTimer();
+    pollTimerRef.current = setTimeout(() => {
+      fetchAccount();
+    }, pollIntervalRef.current);
+  };
 
   const fetchAccount = useCallback(async () => {
-    try {
-      const [accRes, posRes, histRes] = await Promise.all([
-        fetch(`${API}/account`),
-        fetch(`${API}/positions`),
-        fetch(`${API}/history`),
-      ]);
-      const accData = await accRes.json();
-      const posData = await posRes.json();
-      const histData = await histRes.json();
-      
-      setAccount(accData);
-      setPositions(Array.isArray(posData) ? posData : []);
-      setHistory(Array.isArray(histData) ? histData : []);
-    } catch (e) {
-      console.error('Account fetch error:', e);
-    }
+    // If a fetch is already in-flight, return the same promise to deduplicate
+    if (inFlightRef.current) return inFlightRef.current;
+
+    setLoading(true);
+    setError(null);
+
+    inFlightRef.current = (async () => {
+      try {
+        const token = localStorage.getItem('tm_token');
+        const headers = {
+          'Authorization': token ? `Bearer ${token}` : '',
+        };
+
+        const [accRes, posRes, histRes] = await Promise.all([
+          fetch(`${API}/account`, { headers, signal: AbortSignal.timeout(8000) }),
+          fetch(`${API}/positions`, { headers, signal: AbortSignal.timeout(8000) }),
+          fetch(`${API}/history`, { headers, signal: AbortSignal.timeout(8000) }),
+        ]);
+
+        // If any response is not ok, parse body for message if possible
+        const ok = accRes.ok && posRes.ok && histRes.ok;
+        const accData = await (accRes.ok ? accRes.json() : accRes.text().then(t => ({ error: t })));
+        const posData = await (posRes.ok ? posRes.json() : posRes.text().then(t => ({ error: t })));
+        const histData = await (histRes.ok ? histRes.json() : histRes.text().then(t => ({ error: t })));
+
+        if (!ok) {
+          const msg = accData?.error || posData?.error || histData?.error || 'Failed to fetch account data';
+          throw new Error(msg);
+        }
+
+        setAccount(accData);
+        setPositions(Array.isArray(posData) ? posData : []);
+        setHistory(Array.isArray(histData) ? histData : []);
+
+        // Success => reset backoff
+        consecutiveErrorsRef.current = 0;
+        pollIntervalRef.current = 10000;
+      } catch (e) {
+        console.error('Account fetch error:', e);
+        setError(e?.message || String(e));
+
+        // Increase backoff on repeated errors
+        consecutiveErrorsRef.current += 1;
+        const backoff = Math.min(60000, 10000 * Math.pow(2, consecutiveErrorsRef.current - 1));
+        pollIntervalRef.current = backoff;
+      } finally {
+        setLoading(false);
+        inFlightRef.current = null;
+
+        // Schedule next poll respecting current interval/backoff
+        scheduleNextPoll();
+      }
+    })();
+
+    return inFlightRef.current;
   }, []);
 
   useEffect(() => {
+    // Start polling
     fetchAccount();
-    const interval = setInterval(fetchAccount, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearPollTimer();
+    };
   }, [fetchAccount]);
 
   const placeOrder = useCallback(async (symbol, type, volume) => {
-    const res = await fetch(`${API}/order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, type, volume }),
-    });
-    return res.json();
-  }, []);
+    try {
+      const token = localStorage.getItem('tm_token');
+      const res = await fetch(`${API}/order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ symbol, type, volume }),
+        signal: AbortSignal.timeout(10000),
+      });
 
-  return { account, positions, history, placeOrder };
+      const body = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const msg = body?.error || body?.message || `HTTP ${res.status}`;
+        const err = new Error(`Order failed: ${msg}`);
+        err.status = res.status;
+        throw err;
+      }
+
+      // If server returns an application-level error field, throw it
+      if (body && body.error) {
+        const err = new Error(`Order failed: ${body.error}`);
+        throw err;
+      }
+
+      // Refresh account data after successful order
+      fetchAccount();
+
+      return body;
+    } catch (e) {
+      console.error('Order placement error:', e);
+      throw e;
+    }
+  }, [fetchAccount]);
+
+  return { account, positions, history, loading, error, fetchAccount, placeOrder };
 }

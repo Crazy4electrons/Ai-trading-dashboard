@@ -1,500 +1,623 @@
 /**
- * MT5Service — communicates with Python MT5 bridge via subprocess
- * Provides account info, candles, positions, orders, and order management
+ * MT5Service - FastAPI Python Server Client
+ * Spawns Python MT5 bridge server and communicates with it via HTTP/REST
+ * Handles credential persistence, health checks, and automatic reconnection
  */
-import { spawn } from 'child_process';
-import { join } from 'path';
+import { spawn, execSync } from 'child_process';
+import axios from 'axios';
+import { mt5Logger } from '../utils/logger.js';
+import { getCredentialManager } from '../utils/credentialEncryption.js';
+import path from 'path';
 import { fileURLToPath } from 'url';
 import { platform } from 'os';
-import { existsSync } from 'fs';
+import fs from 'fs';
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const BRIDGE_PATH = join(__dirname, '../python/mt5_bridge.py');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PYTHON_MT5_DIR = path.join(__dirname, '../../pythonMT5');
+const PYTHON_MAIN = path.join(PYTHON_MT5_DIR, 'src/main.py');
 
-// Detect correct Python executable — prefer .venv if available
-function getPythonCmd() {
-  const isWindows = platform() === 'win32';
-  const pythonDir = join(__dirname, '../python'); // backend/python/
-  const venvPath = isWindows
-    ? join(pythonDir, '.venv', 'Scripts', 'python.exe')
-    : join(pythonDir, '.venv', 'bin', 'python');
-  
-  if (existsSync(venvPath)) {
-    console.log(`✅ Found virtual environment at: ${venvPath}`);
-    return venvPath;
+// Configuration
+const PYTHON_MT5_PORT = parseInt(process.env.PYTHON_MT5_PORT || '3002');
+const PYTHON_MT5_HOST = '127.0.0.1';
+const PYTHON_MT5_URL = `http://${PYTHON_MT5_HOST}:${PYTHON_MT5_PORT}`;
+const API_TOKEN = process.env.PYTHON_MT5_TOKEN_SECRET || 'default_token';
+const PYTHON_PATH = process.env.PYTHON_PATH || 'python';
+const HEALTH_CHECK_INTERVAL = 2000; // 2 seconds
+const HEALTH_CHECK_TIMEOUT = 5000; // 5 seconds
+const AUTO_RESTART_TIMEOUT = 30000; // 30 seconds between restart attempts
+
+class MT5ServiceImpl {
+  constructor() {
+    this.pythonProcess = null;
+    this.connected = false;
+    this.accountInfo = null;
+    this.healthCheckInterval = null;
+    this.isShuttingDown = false;
+    this.restartAttempts = 0;
+    this.maxRestartAttempts = 3;
+    this.lastRestartTime = 0;
+    this.candleCache = new Map();
+    this.credentialManager = null;
+    
+    mt5Logger.debug('MT5Service', 'Initialized');
   }
-  
-  console.warn(`⚠️  Virtual environment not found at: ${venvPath}`);
-  console.warn(`   Falling back to system Python executable`);
-  
-  // Fallback to system Python
-  return isWindows ? 'python' : 'python3';
-}
 
-const PYTHON_CMD = getPythonCmd();
-
-let bridgeProcess = null;
-let connected = false;
-let pendingRequests = new Map();
-let nextRequestId = 1;
-let tickCallbacks = [];
-let candleCallbacks = [];
-let bridgeReady = false;
-
-function startBridge() {
-  if (bridgeProcess) return;
-  
-  try {
-    console.log(`🐍 Starting MT5 Bridge with Python: ${PYTHON_CMD}`);
-    
-    // Set up environment for venv
-    const env = { ...process.env };
-    if (existsSync(join(__dirname, '../python', '.venv'))) {
-      const pythonDir = join(__dirname, '../python');
-      const isWindows = platform() === 'win32';
-      const venvPath = isWindows
-        ? join(pythonDir, '.venv')
-        : join(pythonDir, '.venv');
-      
-      // Set VIRTUAL_ENV and update PATH to use venv
-      env.VIRTUAL_ENV = venvPath;
-      if (isWindows) {
-        env.PATH = join(venvPath, 'Scripts') + ';' + env.PATH;
-      } else {
-        env.PATH = join(venvPath, 'bin') + ':' + env.PATH;
-      }
-      console.log(`✅ Virtual environment activated: ${venvPath}`);
+  /**
+   * Check if Python is available in PATH
+   */
+  checkPythonAvailable() {
+    try {
+      const cmd = platform() === 'win32' ? 'where python' : 'which python';
+      execSync(cmd, { stdio: 'pipe' });
+      return true;
+    } catch (e) {
+      return false;
     }
-    
-    bridgeProcess = spawn(PYTHON_CMD, [BRIDGE_PATH], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf-8',
-      env: env,
-    });
-
-    let buffer = '';
-    let stderrOutput = '';
-
-    bridgeProcess.stdout.on('data', (data) => {
-      buffer += data;
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // Keep incomplete line
-
-      lines.forEach((line) => {
-        if (!line.trim()) return;
-        try {
-          const response = JSON.parse(line);
-          
-          // Handle startup confirmation
-          if (response.status === 'bridge_started') {
-            bridgeReady = true;
-            console.log('✅ MT5 Bridge is ready and waiting for commands');
-            return;
-          }
-          
-          const id = response.id;
-          if (id && pendingRequests.has(id)) {
-            const { resolve } = pendingRequests.get(id);
-            pendingRequests.delete(id);
-            resolve(response);
-          }
-        } catch (e) {
-          console.error('Failed to parse bridge response:', e.message);
-        }
-      });
-    });
-
-    bridgeProcess.stderr.on('data', (data) => {
-      stderrOutput += data.toString();
-      console.error('[MT5 Bridge stderr]', data.toString());
-    });
-
-    bridgeProcess.on('error', (err) => {
-      console.error('Bridge spawn error:', err.message);
-      if (err.code === 'ENOENT') {
-        console.error(`\n❌ Python executable "${PYTHON_CMD}" not found.`);
-        console.error(`\n📝 Fix this by:`);
-        console.error(`   1. Install Python 3 from https://www.python.org/downloads/`);
-        console.error(`   2. On Windows: Check "Add Python to PATH" during installation`);
-        console.error(`   3. Create virtual environment: cd backend/python && python -m venv .venv`);
-        console.error(`   4. Install MetaTrader5: uv pip install MetaTrader5`);
-        console.error(`   5. Restart the backend server\n`);
-      }
-      bridgeProcess = null;
-      connected = false;
-    });
-
-    bridgeProcess.on('exit', (code) => {
-      if (code !== 0) {
-        console.error(`\n❌ MT5 Bridge exited with code ${code}`);
-        if (stderrOutput) {
-          console.error('Error output:');
-          console.error(stderrOutput);
-        }
-        console.error(`\n📝 Troubleshooting:`);
-        console.error(`   1. Run: test_mt5.bat (to check MetaTrader5 installation)`);
-        console.error(`   2. Run: diagnose_python.bat (for full diagnostic)`);
-        console.error(`   3. Ensure MetaTrader 5 terminal is running`);
-        console.error(`   4. Check credentials in environment variables\n`);
-      } else {
-        console.log('MT5 Bridge exited normally');
-      }
-      bridgeProcess = null;
-      connected = false;
-    });
-  } catch (e) {
-    console.error('Failed to start MT5 bridge:', e.message);
-    bridgeProcess = null;
   }
-}
 
-function sendCommand(cmd) {
-  return new Promise((resolve) => {
-    if (!bridgeProcess) {
-      startBridge();
+  /**
+   * Start Python MT5 server as subprocess
+   * Spawns the FastAPI server with MT5 credentials
+   */
+  async startPythonServer(account, password, server) {
+    if (this.pythonProcess) {
+      mt5Logger.warn('MT5Server', 'Python server already running');
+      return true;
     }
 
-    if (!bridgeProcess) {
-      return resolve({ error: 'Failed to start MT5 bridge. Ensure Python 3 and MetaTrader5 library are installed.' });
+    // Check if Python is available
+    if (!this.checkPythonAvailable()) {
+      const errorMsg = `Python is not installed or not in PATH. Cannot start MT5 server. ` +
+        `Please install Python 3.8+ from https://www.python.org/downloads/ and add it to PATH.`;
+      mt5Logger.error('PythonCheck', errorMsg);
+      this.pythonNotAvailable = true;
+      return false;
     }
 
-    const id = nextRequestId++;
-    const request = { ...cmd, id };
-    
-    // Longer timeout for connect command since MT5 init can take time
-    const isConnect = cmd.cmd === 'connect';
-    const timeoutDuration = isConnect ? 30000 : 10000;
-    
-    const timeout = setTimeout(() => {
-      pendingRequests.delete(id);
-      const timeoutMsg = isConnect 
-        ? 'MT5 connection timeout. Make sure MetaTrader 5 terminal is running and account credentials are correct.'
-        : 'Request timeout';
-      resolve({ error: timeoutMsg });
-    }, timeoutDuration);
-
-    pendingRequests.set(id, {
-      resolve: (response) => {
-        clearTimeout(timeout);
-        if (response.debug) {
-          console.log('[MT5 Bridge debug]', response.debug);
-        }
-        resolve(response);
-      },
-    });
+    // Rate limit restart attempts
+    if (this.restartAttempts > 0 && Date.now() - this.lastRestartTime < AUTO_RESTART_TIMEOUT) {
+      mt5Logger.warn('MT5Server', `Restart throttled. Next attempt at ${new Date(this.lastRestartTime + AUTO_RESTART_TIMEOUT)}`);
+      return false;
+    }
 
     try {
-      bridgeProcess.stdin.write(JSON.stringify(request) + '\n');
-    } catch (e) {
-      pendingRequests.delete(id);
-      resolve({ error: `Failed to send command: ${e.message}` });
+      mt5Logger.mt5Service('StartServer', 'Spawning Python server', {
+        account,
+        server,
+        pythonExe: PYTHON_PATH,
+        mainScript: PYTHON_MAIN,
+        port: PYTHON_MT5_PORT
+      });
+
+      // Prepare environment variables for Python process
+      const childEnv = {
+        ...process.env,
+        NODE_API_TOKEN: API_TOKEN,
+        NODE_WS_URL: `ws://127.0.0.1:${process.env.PORT || 3001}/api/mt5/ws-internal`
+      };
+
+      // Start Python process
+      this.pythonProcess = spawn(PYTHON_PATH, [
+        PYTHON_MAIN,
+        '--account', String(account),
+        '--password', password,
+        '--server', server,
+        '--port', String(PYTHON_MT5_PORT),
+        '--host', PYTHON_MT5_HOST
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+        cwd: PYTHON_MT5_DIR,
+        shell: platform() === 'win32' ? true : false,
+        env: childEnv
+      });
+
+      let stdoutBuffer = '';
+      let stderrBuffer = '';
+
+      // Capture stdout (logs)
+      this.pythonProcess.stdout.on('data', (data) => {
+        const output = data.toString();
+        stdoutBuffer += output;
+        
+        // Log individual lines
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop() || '';
+        
+        lines.forEach(line => {
+          if (line.trim()) {
+            mt5Logger.debug('Python', line.trim());
+          }
+        });
+      });
+
+      // Capture stderr (errors)
+      this.pythonProcess.stderr.on('data', (data) => {
+        const output = data.toString();
+        stderrBuffer += output;
+        
+        const lines = stderrBuffer.split('\n');
+        stderrBuffer = lines.pop() || '';
+        
+        lines.forEach(line => {
+          if (line.trim()) {
+            mt5Logger.error('Python', 'stderr', new Error(line.trim()));
+          }
+        });
+      });
+
+      this.pythonProcess.on('error', (error) => {
+        mt5Logger.error('PythonSpawn', 'Failed to spawn Python process', error);
+        this.pythonProcess = null;
+        this.connected = false;
+      });
+
+      this.pythonProcess.on('exit', (code, signal) => {
+        if (!this.isShuttingDown) {
+          mt5Logger.error('PythonProcess', `Exited with code ${code}, signal ${signal}`);
+        }
+        this.pythonProcess = null;
+        this.connected = false;
+      });
+
+      // Wait for server to be ready
+      await this.waitForServerReady();
+
+      this.connected = true;
+      this.restartAttempts = 0;
+      this.lastRestartTime = Date.now();
+
+      mt5Logger.mt5Service('StartServer', 'Python server started successfully', { port: PYTHON_MT5_PORT });
+
+      // Start health check
+      this.startHealthCheck();
+
+      return true;
+
+    } catch (error) {
+      mt5Logger.error('StartServer', 'Failed to start Python server', error);
+      this.restartAttempts++;
+      this.lastRestartTime = Date.now();
+
+      if (this.pythonProcess) {
+        try {
+          this.pythonProcess.kill();
+        } catch (e) {
+          // Already dead
+        }
+        this.pythonProcess = null;
+      }
+
+      return false;
     }
-  });
-}
-
-let candleCache = new Map(); // symbol:timeframe -> {candles: [...], timestamp}
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const MAX_CACHED_CANDLES = 10000; // Per symbol/timeframe
-
-function getCacheKey(symbol, timeframe) {
-  return `${symbol}:${timeframe}`;
-}
-
-function getCachedCandles(symbol, timeframe) {
-  const key = getCacheKey(symbol, timeframe);
-  const cached = candleCache.get(key);
-  
-  // Return if cache exists and not expired
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.candles;
   }
-  
-  // Invalidate expired cache
-  if (cached) candleCache.delete(key);
-  return null;
+
+  /**
+   * Wait for Python server to be ready AND MT5 to be connected
+   * Python auto-login happens asynchronously, so we need to wait for mt5_connected
+   */
+  async waitForServerReady(timeoutMs = 30000) {
+    const startTime = Date.now();
+    let lastStatus = null;
+
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        const response = await axios.get(`${PYTHON_MT5_URL}/health`, {
+          timeout: 3000
+        });
+
+        lastStatus = response.data;
+        
+        if (response.status === 200 && response.data.status === 'ok' && response.data.mt5_connected) {
+          mt5Logger.debug('HealthCheck', 'Server and MT5 are ready', {
+            serverStatus: response.data.status,
+            mt5Connected: response.data.mt5_connected,
+            wsConnected: response.data.ws_connected
+          });
+          return true;
+        } else if (response.status === 200) {
+          mt5Logger.debug('ServerReady', 'Server up, waiting for MT5 login', {
+            status: response.data.status,
+            mt5_connected: response.data.mt5_connected,
+            elapsed: Date.now() - startTime
+          }); 
+        }
+      } catch (error) {
+        mt5Logger.debug('ServerReady', 'Server not ready yet', { error: error.message });
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    const errorMsg = lastStatus 
+      ? `Python server did not fully initialize within ${timeoutMs}ms. Status: MT5=${lastStatus.mt5_connected}, WS=${lastStatus.ws_connected}`
+      : `Python server did not respond within ${timeoutMs}ms`;
+    
+    throw new Error(errorMsg);
+  }
+
+  /**
+   * Start periodic health checks
+   */
+  startHealthCheck() {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    this.healthCheckInterval = setInterval(async () => {
+      try {
+        const response = await axios.get(`${PYTHON_MT5_URL}/health`, {
+          timeout: HEALTH_CHECK_TIMEOUT
+        });
+
+        if (response.status === 200) {
+          const { mt5_connected } = response.data;
+          if (!mt5_connected && this.connected) {
+            mt5Logger.warn('HealthCheck', 'MT5 disconnected on server');
+            this.connected = false;
+          }
+        }
+      } catch (error) {
+        if (this.connected && !this.isShuttingDown) {
+          mt5Logger.error('HealthCheck', 'Health check failed', error);
+          this.connected = false;
+        }
+      }
+    }, HEALTH_CHECK_INTERVAL);
+  }
+
+  /**
+   * Shutdown Python server gracefully
+   */
+  shutdown() {
+    this.isShuttingDown = true;
+
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    if (this.pythonProcess) {
+      try {
+        this.pythonProcess.kill('SIGTERM');
+        mt5Logger.mt5Service('Shutdown', 'Sent SIGTERM to Python server');
+      } catch (error) {
+        mt5Logger.error('Shutdown', 'Failed to kill Python process', error);
+      }
+    }
+
+    this.connected = false;
+  }
+
+  /**
+   * HTTP request to Python server with token auth
+   */
+  async httpRequest(method, endpoint, data = null, retries = 3) {
+    const url = `${PYTHON_MT5_URL}${endpoint}`;
+    const headers = {
+      'X-API-Token': API_TOKEN,
+      'Content-Type': 'application/json'
+    };
+
+    // Sanitize data for logging (mask sensitive fields)
+    const sanitize = (obj) => {
+      if (!obj || typeof obj !== 'object') return obj;
+      try {
+        const copy = JSON.parse(JSON.stringify(obj));
+        if (copy.password) copy.password = '***';
+        if (copy.token) copy.token = '***';
+        return copy;
+      } catch (e) {
+        return obj;
+      }
+    };
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        let response;
+
+        mt5Logger.mt5Command('HTTPRequest', `Attempt ${attempt + 1}: ${method} ${endpoint}`, sanitize(data));
+
+        if (method === 'GET') {
+          response = await axios.get(url, { headers, timeout: 10000 });
+        } else if (method === 'POST') {
+          response = await axios.post(url, data, { headers, timeout: 10000 });
+        } else {
+          throw new Error(`Unsupported method: ${method}`);
+        }
+
+        mt5Logger.mt5Response(endpoint, { attempt: attempt + 1, status: response.status, data: response.data });
+
+        return response.data;
+
+      } catch (error) {
+        // If axios provided a response, include status/data in the log
+        if (error.response) {
+          mt5Logger.error('HTTPRequest', `Attempt ${attempt + 1} failed: ${method} ${endpoint} -> HTTP ${error.response.status}`, {
+            attempt: attempt + 1,
+            status: error.response.status,
+            data: error.response.data
+          });
+        } else {
+          mt5Logger.error('HTTPRequest', `Attempt ${attempt + 1} failed: ${method} ${endpoint}`, { attempt: attempt + 1, message: error.message });
+        }
+
+        if (attempt === retries - 1) {
+          this.connected = false;
+          const msg = error.response ? (error.response.data || error.response.statusText) : error.message;
+          return { error: String(msg), status: error.response ? error.response.status : null };
+        }
+
+        // Exponential backoff before retry
+        const delay = Math.min(1000 * (2 ** attempt), 5000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    return { error: 'Max retries exceeded' };
+  }
+
+  /**
+   * Initialize MT5 connection
+   */
+  async init(account, password, server = 'MetaQuotes-Demo') {
+    try {
+      this.credentialManager = getCredentialManager();
+
+      // Start Python server
+      const serverStarted = await this.startPythonServer(account, password, server);
+
+      if (!serverStarted) {
+        const errorMsg = this.pythonNotAvailable 
+          ? 'Python is not installed. Please install Python 3.8+ and add it to your system PATH.'
+          : 'Failed to start Python server';
+        return {
+          error: true,
+          connected: false,
+          message: errorMsg
+        };
+      }
+
+      // Send login request
+      const result = await this.httpRequest('POST', '/login', {
+        account,
+        password,
+        server
+      });
+
+      if (result.connected) {
+        this.accountInfo = result;
+
+        // Save credentials encrypted
+        try {
+          this.credentialManager.saveCredentials(account, password, server);
+          mt5Logger.mt5Service('Init', 'Credentials saved to disk');
+        } catch (error) {
+          mt5Logger.warn('Init', 'Failed to save credentials', error);
+        }
+
+        return result;
+      }
+
+      return result;
+
+    } catch (error) {
+      mt5Logger.error('Init', 'Connection failed', error);
+      return {
+        error: true,
+        connected: false,
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Auto-init with saved credentials
+   */
+  async autoInit() {
+    try {
+      this.credentialManager = getCredentialManager();
+      const saved = this.credentialManager.loadCredentials();
+
+      if (!saved) {
+        mt5Logger.debug('AutoInit', 'No saved credentials found');
+        return false;
+      }
+
+      mt5Logger.mt5Service('AutoInit', 'Attempting auto-login with saved credentials', {
+        account: saved.account
+      });
+
+      return await this.init(saved.account, saved.password, saved.server);
+
+    } catch (error) {
+      mt5Logger.error('AutoInit', 'Auto-init failed', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get account information
+   */
+  async getAccountInfo() {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+    return await this.httpRequest('GET', '/account');
+  }
+
+  /**
+   * Get candles (with caching)
+   */
+  async getCandles(symbol, timeframe = '1h', count = 200) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected', candles: [] };
+    }
+
+    // Check cache
+    const cacheKey = `${symbol}:${timeframe}`;
+    const cached = this.candleCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+      mt5Logger.debug('CandleCache', 'Cache hit', { symbol, timeframe });
+      return { error: false, candles: cached.candles };
+    }
+
+    const result = await this.httpRequest('GET', `/candles/${symbol}?timeframe=${timeframe}&count=${count}`);
+
+    if (!result.error && result.candles) {
+      this.candleCache.set(cacheKey, {
+        candles: result.candles,
+        timestamp: Date.now()
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Get prices (latest tick)
+   */
+  async getPrice(symbol) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+    // Get latest tick from cache or fetch
+    return await this.httpRequest('GET', `/symbol/${symbol}`);
+  }
+
+  /**
+   * Get open positions
+   */
+  async getPositions() {
+    if (!this.connected) {
+      return { error: 'MT5 not connected', positions: [] };
+    }
+    return await this.httpRequest('GET', '/positions');
+  }
+
+  /**
+   * Get trade history
+   */
+  async getHistory(startDate = null, endDate = null, days = 30) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected', trades: [] };
+    }
+    return await this.httpRequest('GET', `/trades?days=${days}`);
+  }
+
+  /**
+   * Place order
+   */
+  async placeOrder(symbol, orderType, volume, stopLoss = null, takeProfit = null) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+
+    return await this.httpRequest('POST', '/order', {
+      symbol,
+      order_type: orderType,
+      volume,
+      stop_loss: stopLoss,
+      take_profit: takeProfit
+    });
+  }
+
+  /**
+   * Close position
+   */
+  async closePosition(ticket) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+
+    return await this.httpRequest('POST', `/close/${ticket}`, {});
+  }
+
+  /**
+   * Get symbols
+   */
+  async getSymbols() {
+    if (!this.connected) {
+      return { error: 'MT5 not connected', symbols: [] };
+    }
+    return await this.httpRequest('GET', '/symbols');
+  }
+
+  /**
+   * Get symbol information
+   */
+  async getSymbolInfo(symbol) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+    return await this.httpRequest('GET', `/symbol/${symbol}`);
+  }
+
+  /**
+   * Get order book depth
+   */
+  async getDepth(symbol) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+    return await this.httpRequest('GET', `/depth/${symbol}`);
+  }
+
+  /**
+   * Check if connected
+   */
+  isConnected() {
+    return this.connected && this.pythonProcess !== null;
+  }
+
+  /**
+   * Subscribe to real-time ticks
+   */
+  async subscribeSymbol(symbol) {
+    if (!this.connected) {
+      return { error: 'MT5 not connected' };
+    }
+    return await this.httpRequest('POST', `/subscribe/${symbol}`, {});
+  }
+
+  /**
+   * Unsubscribe from real-time ticks
+   */
+  async unsubscribeSymbol(symbol) {
+    return await this.httpRequest('POST', `/unsubscribe/${symbol}`, {});
+  }
 }
 
-function setCachedCandles(symbol, timeframe, candles) {
-  const key = getCacheKey(symbol, timeframe);
-  candleCache.set(key, {
-    candles,
-    timestamp: Date.now(),
-  });
-  
-  // Implement simple LRU: if cache gets too large, remove oldest entries
-  if (candleCache.size > 20) {
-    const oldestKey = candleCache.keys().next().value;
-    candleCache.delete(oldestKey);
+// Singleton instance
+let mt5ServiceInstance = null;
+
+export function getMT5Service() {
+  if (!mt5ServiceInstance) {
+    mt5ServiceInstance = new MT5ServiceImpl();
   }
+  return mt5ServiceInstance;
 }
 
 export const MT5Service = {
-  /** Initialize MT5 connection with account credentials */
-  async init(account, password, server = 'MetaQuotes-Demo') {
-    try {
-      // Validate inputs
-      if (!account || !password) {
-        return { error: 'Account and password required' };
-      }
-
-      // Start bridge if not running
-      if (!bridgeProcess) {
-        startBridge();
-      }
-
-      // Send connect command
-      const response = await sendCommand({
-        cmd: 'connect',
-        account: parseInt(account),
-        password,
-        server: server || 'MetaQuotes-Demo',
-      });
-
-      if (response.success) {
-        connected = true;
-        console.log('✅ Connected to MT5');
-      }
-
-      return response;
-    } catch (e) {
-      return { error: e.message };
-    }
-  },
-
-  /** Get account information */
-  async getAccountInfo() {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({ cmd: 'account' });
-  },
-
-  /** Get candles for a symbol */
-  async getCandles(symbol, timeframe = '1h', count = 200) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'candles',
-      symbol,
-      timeframe,
-      count,
-    });
-  },
-
-  /** Get paginated candles with caching for scroll-back support */
-  async getCandlesPaginated(symbol, timeframe = '1h', offset = 0, limit = 1000) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-
-    // Try to use cache first
-    let allCandles = getCachedCandles(symbol, timeframe);
-
-    // If not in cache or cache is small, fetch fresh data
-    if (!allCandles || allCandles.length < MAX_CACHED_CANDLES) {
-      // Fetch more candles than the limit to build up cache
-      const fetchCount = Math.max(limit * 3, 3000);
-      const freshCandles = await sendCommand({
-        cmd: 'candles',
-        symbol,
-        timeframe,
-        count: fetchCount,
-      });
-
-      if (Array.isArray(freshCandles)) {
-        // Merge with existing cache (newest first)
-        if (allCandles) {
-          // Keep only unique candles, combine, and sort by time
-          const combined = [...freshCandles, ...allCandles];
-          const uniqueMap = new Map();
-          combined.forEach((c) => {
-            uniqueMap.set(c.time, c);
-          });
-          allCandles = Array.from(uniqueMap.values()).sort((a, b) => a.time - b.time);
-          // Cap at MAX_CACHED_CANDLES
-          if (allCandles.length > MAX_CACHED_CANDLES) {
-            allCandles = allCandles.slice(-MAX_CACHED_CANDLES);
-          }
-        } else {
-          allCandles = freshCandles;
-        }
-        setCachedCandles(symbol, timeframe, allCandles);
-      } else if (freshCandles.error) {
-        return freshCandles;
-      }
-    }
-
-    // Paginate the results
-    const total = allCandles.length;
-    const start = Math.max(0, offset);
-    const end = Math.min(start + limit, total);
-    const pageCandles = allCandles.slice(start, end);
-
-    return {
-      candles: pageCandles,
-      offset,
-      limit,
-      total,
-      hasMore: end < total,
-    };
-  },
-
-  /** Get current price for a symbol */
-  async getPrice(symbol) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'price',
-      symbol,
-    });
-  },
-
-  /** Get market depth (order book) for a symbol */
-  async getDepth(symbol) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'depth',
-      symbol,
-    });
-  },
-
-  /** Get symbol information */
-  async getSymbolInfo(symbol) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'symbol_info',
-      symbol,
-    });
-  },
-
-  /** Get all available symbols */
-  async getSymbols() {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'symbols',
-    });
-  },
-
-  /** Get open positions */
-  async getPositions() {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({ cmd: 'positions' });
-  },
-
-  /** Get trade history */
-  async getHistory(fromDate = null, toDate = null, days = 30) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'history',
-      from_date: fromDate,
-      to_date: toDate,
-      days,
-    });
-  },
-
-  /** Place a new order */
-  async placeOrder(symbol, type, volume, price = null, sl = null, tp = null) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'order',
-      symbol,
-      type,
-      volume,
-      price,
-      sl,
-      tp,
-    });
-  },
-
-  /** Close a position by ticket */
-  async closeOrder(ticket) {
-    if (!connected) {
-      return { error: 'Not connected to MT5. Call /connect first.' };
-    }
-    return await sendCommand({
-      cmd: 'close_order',
-      ticket,
-    });
-  },
-
-  /** Subscribe to price updates */
-  onTick(callback) {
-    tickCallbacks.push(callback);
-  },
-
-  /** Subscribe to candle updates */
-  onCandleUpdate(callback) {
-    candleCallbacks.push(callback);
-  },
-
-  /** Emit a candle update (called from server.js for live updates) */
-  emitCandleUpdate(symbol, timeframe, candle) {
-    candleCallbacks.forEach((cb) => {
-      try {
-        cb(symbol, timeframe, candle);
-      } catch (e) {
-        console.error('Error in candle callback:', e);
-      }
-    });
-  },
-
-  /** Get mock candles for testing */
-  getMockCandles(symbol, timeframe = '1h', count = 100) {
-    const candles = [];
-    const now = Date.now() / 1000; // Convert to seconds
-    
-    // Calculate interval in seconds based on timeframe
-    let interval = 3600; // default 1 hour
-    if (timeframe === '5m') interval = 300;
-    else if (timeframe === '15m') interval = 900;
-    else if (timeframe === '30m') interval = 1800;
-    else if (timeframe === '1h') interval = 3600;
-    else if (timeframe === '4h') interval = 14400;
-    else if (timeframe === '1d') interval = 86400;
-    else if (timeframe === '1w') interval = 604800;
-
-    // Generate realistic looking candlesticks
-    let basePrice = symbol.includes('USD') ? 
-      (symbol === 'BTCUSD' ? 45000 : symbol === 'ETHUSD' ? 2500 : 1.0) : 100;
-    
-    for (let i = count - 1; i >= 0; i--) {
-      const time = Math.floor(now - i * interval);
-      const open = basePrice + (Math.random() - 0.5) * (basePrice * 0.02);
-      const close = open + (Math.random() - 0.5) * (basePrice * 0.02);
-      const high = Math.max(open, close) + Math.random() * (basePrice * 0.01);
-      const low = Math.min(open, close) - Math.random() * (basePrice * 0.01);
-
-      candles.push({
-        time,
-        open,
-        high,
-        low,
-        close,
-        volume: Math.floor(Math.random() * 1000000),
-      });
-      
-      // Slight trend for more realistic chart
-      basePrice = close;
-    }
-
-    return candles;
-  },
+  init: (account, password, server) => getMT5Service().init(account, password, server),
+  autoInit: () => getMT5Service().autoInit(),
+  getAccountInfo: () => getMT5Service().getAccountInfo(),
+  getCandles: (symbol, timeframe, count) => getMT5Service().getCandles(symbol, timeframe, count),
+  getCandlesPaginated: (symbol, timeframe, offset, limit) =>
+    getMT5Service().getCandles(symbol, timeframe, limit),
+  getPrice: (symbol) => getMT5Service().getPrice(symbol),
+  getPositions: () => getMT5Service().getPositions(),
+  getHistory: (from, to, days) => getMT5Service().getHistory(from, to, days),
+  placeOrder: (symbol, type, volume, stopLoss = null, takeProfit = null) =>
+    getMT5Service().placeOrder(symbol, type, volume, stopLoss, takeProfit),
+  closePosition: (ticket) => getMT5Service().closePosition(ticket),
+  getSymbols: () => getMT5Service().getSymbols(),
+  getSymbolInfo: (symbol) => getMT5Service().getSymbolInfo(symbol),
+  getDepth: (symbol) => getMT5Service().getDepth(symbol),
+  isConnected: () => getMT5Service().isConnected(),
+  subscribeSymbol: (symbol) => getMT5Service().subscribeSymbol(symbol),
+  unsubscribeSymbol: (symbol) => getMT5Service().unsubscribeSymbol(symbol),
+  shutdown: () => getMT5Service().shutdown()
 };
 
-export const getMockCandles = (symbol, timeframe = '1h', count = 100) => {
-  return MT5Service.getMockCandles(symbol, timeframe, count);
-};
+export default MT5Service;

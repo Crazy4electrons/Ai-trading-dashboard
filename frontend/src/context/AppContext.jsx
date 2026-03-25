@@ -6,21 +6,26 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 const AppContext = createContext(null);
 
 const DEFAULT_SETTINGS = {
-  mt5Account: '',
-  mt5Password: '',
-  mt5Server: 'MetaQuotes-Demo',
   newsApiKey: '',
   openaiKey: '',
   anthropicKey: '',
   llmProvider: 'anthropic',
   theme: 'dark',
+  autoConnect: true, // Auto-connect on app load
 };
 
 const DEFAULT_WATCHLIST = ['BTCUSD', 'ETHUSD'];
 const DEFAULT_FAVORITES = ['BTCUSD', 'ETHUSD', 'XAUUSD'];
 
 export function AppProvider({ children }) {
-  const [focusedSymbol, setFocusedSymbol] = useState('BTCUSD');
+  const [focusedSymbol, setFocusedSymbol] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tm_focusedSymbol');
+      return saved || 'BTCUSD';
+    } catch {
+      return 'BTCUSD';
+    }
+  });
   const [watchlist, setWatchlist] = useState(DEFAULT_WATCHLIST);
   const [favorites, setFavorites] = useState(DEFAULT_FAVORITES);
   const [settings, setSettings] = useState(() => {
@@ -33,6 +38,46 @@ export function AppProvider({ children }) {
   const [showAccounts, setShowAccounts] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeIndicators, setActiveIndicators] = useState(['RSI', 'MACD', 'BB', 'ATR']);
+  const [backendConnected, setBackendConnected] = useState(false);
+  const [backendError, setBackendError] = useState(null);
+
+  // Check backend connectivity on mount
+  useEffect(() => {
+    const checkBackend = async () => {
+      try {
+        const protocol = window.location.protocol;
+        const host = window.location.hostname === 'localhost' ? 'localhost:3001' : window.location.host;
+        const healthUrl = `${protocol}//${host}/health`;
+        
+        const res = await fetch(healthUrl, { 
+          method: 'HEAD',
+          signal: AbortSignal.timeout(5000),
+        });
+        
+        if (res.ok) {
+          setBackendConnected(true);
+          setBackendError(null);
+        } else {
+          setBackendConnected(false);
+          setBackendError('Backend returned an error');
+        }
+      } catch (e) {
+        setBackendConnected(false);
+        setBackendError(`Cannot reach backend: ${e.message}`);
+        console.error('Backend health check failed:', e);
+      }
+    };
+    
+    checkBackend();
+    // Recheck every 30 seconds
+    const interval = setInterval(checkBackend, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Persist focused symbol to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('tm_focusedSymbol', focusedSymbol);
+  }, [focusedSymbol]);
 
   // Persist settings
   useEffect(() => {
@@ -75,6 +120,7 @@ export function AppProvider({ children }) {
       showAccounts, setShowAccounts,
       settingsOpen, setSettingsOpen,
       activeIndicators, addIndicator, removeIndicator,
+      backendConnected, backendError,
     }}>
       {children}
     </AppContext.Provider>
