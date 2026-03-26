@@ -1,0 +1,243 @@
+/**
+ * AccountPanel component styles
+ */
+
+.account-panel {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md);
+  height: 100%;
+  gap: var(--space-md);
+  overflow-y: auto;
+}
+
+.account-panel h3 {
+  margin: 0;
+  font-size: 1em;
+  color: var(--text-primary);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.account-panel h4 {
+  font-size: 0.9em;
+  color: var(--text-secondary);
+  margin: var(--space-md) 0 var(--space-sm) 0;
+  font-weight: 600;
+}
+
+.loading {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: var(--space-lg);
+  font-size: var(--font-size-sm);
+}
+
+/* Account cards */
+.account-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+}
+
+.card {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: var(--space-md);
+  transition: var(--transition);
+}
+
+.card:hover {
+  border-color: var(--border-color);
+}
+
+.card-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
+.card-value {
+  font-size: 1.2em;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: 'Courier New', monospace;
+  margin-bottom: 6px;
+}
+
+.card-subtext {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+/* Margin card styles */
+.margin-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.margin-bar {
+  width: 100%;
+  height: 4px;
+  background-color: var(--border-light);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.margin-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+  border-radius: 2px;
+}
+
+.margin-fill-success {
+  background-color: var(--color-success);
+}
+
+.margin-fill-warning {
+  background-color: var(--color-warning);
+}
+
+.margin-fill-danger {
+  background-color: var(--color-danger);
+}
+
+.margin-card.margin-success {
+  border-color: var(--color-success);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.05) 0%, transparent 100%);
+}
+
+.margin-card.margin-warning {
+  border-color: var(--color-warning);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.05) 0%, transparent 100%);
+}
+
+.margin-card.margin-danger {
+  border-color: var(--color-danger);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.05) 0%, transparent 100%);
+}
+
+/* Positions section */
+.positions-section {
+  border-top: 1px solid var(--border-color);
+  padding-top: var(--space-md);
+}
+
+.empty-positions {
+  text-align: center;
+  padding: var(--space-lg) var(--space-md);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.positions-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.position-item {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: var(--space-md);
+  font-size: var(--font-size-xs);
+}
+
+.position-item:hover {
+  border-color: var(--border-color);
+  background-color: var(--bg-secondary);
+}
+
+.position-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.position-symbol {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 1em;
+}
+
+.position-type {
+  padding: 2px 6px;
+  border-radius: 2px;
+  font-weight: 600;
+  font-size: 0.75em;
+  text-transform: uppercase;
+}
+
+.position-type.buy {
+  background-color: rgba(16, 185, 129, 0.2);
+  color: var(--color-success);
+}
+
+.position-type.sell {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: var(--color-danger);
+}
+
+.position-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+}
+
+.detail {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.detail .label {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.detail .value {
+  color: var(--text-primary);
+  font-family: 'Courier New', monospace;
+  font-weight: 600;
+}
+
+.detail .value.profit {
+  color: var(--color-success);
+}
+
+.detail .value.loss {
+  color: var(--color-danger);
+}
+
+/* Scrollbar */
+.account-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.account-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.account-panel::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.account-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+}
+
+@media (max-width: 768px) {
+  .account-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

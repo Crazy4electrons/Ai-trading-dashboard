@@ -1,0 +1,322 @@
+/**
+ * Watchlist component styles
+ */
+
+.watchlist {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md);
+  height: 100%;
+  gap: var(--space-md);
+}
+
+.watchlist h3 {
+  margin: 0;
+  font-size: 1em;
+  color: var(--text-primary);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.search-box {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.search-box input {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-sm);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+}
+
+.search-box input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.search-box input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* Search results */
+.search-results {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.search-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border-light);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1em;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-close:hover {
+  color: var(--text-primary);
+}
+
+.results-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.result-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border-light);
+  font-size: var(--font-size-xs);
+  hover: background-color var(--bg-tertiary);
+}
+
+.result-item:hover {
+  background-color: var(--bg-tertiary);
+}
+
+.result-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex: 1;
+}
+
+.result-symbol {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.result-category {
+  color: var(--text-tertiary);
+  font-size: 0.8em;
+  background-color: rgba(37, 99, 235, 0.1);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.btn-add {
+  background-color: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: bold;
+  transition: var(--transition);
+}
+
+.btn-add:hover {
+  background-color: var(--color-primary-light);
+  transform: scale(1.1);
+}
+
+/* Categories list */
+.categories-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2xl) var(--space-md);
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.empty-state .hint {
+  font-size: var(--font-size-xs);
+  margin-top: var(--space-sm);
+}
+
+/* Category */
+.category {
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.category-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background-color: transparent;
+  border: none;
+  cursor: pointer;
+  transition: var(--transition);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.category-header:hover {
+  background-color: var(--bg-tertiary);
+}
+
+.category-icon {
+  width: 16px;
+  text-align: center;
+  font-size: 0.8em;
+}
+
+.category-name {
+  flex: 1;
+  text-align: left;
+}
+
+.category-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  background-color: rgba(37, 99, 235, 0.1);
+  padding: 2px 8px;
+  border-radius: 12px;
+  min-width: 24px;
+  text-align: center;
+}
+
+/* Category items */
+.category-items {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-light);
+  background-color: var(--bg-secondary);
+}
+
+.symbol-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  transition: var(--transition);
+  font-size: var(--font-size-xs);
+}
+
+.symbol-row:last-child {
+  border-bottom: none;
+}
+
+.symbol-row:hover {
+  background-color: var(--bg-tertiary);
+}
+
+.symbol-row.selected {
+  background-color: rgba(37, 99, 235, 0.2);
+  border-left: 2px solid var(--color-primary);
+  padding-left: calc(var(--space-md) - 2px);
+}
+
+.symbol-left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.symbol-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.symbol-prices {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.price {
+  min-width: 50px;
+  text-align: right;
+  font-family: 'Courier New', monospace;
+}
+
+.price.bid {
+  color: var(--color-danger);
+}
+
+.price.ask {
+  color: var(--color-success);
+}
+
+.btn-remove {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 0.9em;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: var(--space-sm);
+  transition: var(--transition);
+  opacity: 0.6;
+}
+
+.btn-remove:hover {
+  color: var(--color-danger);
+  opacity: 1;
+}
+
+/* Scrollbar */
+.categories-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.categories-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.categories-list::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.categories-list::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+}
