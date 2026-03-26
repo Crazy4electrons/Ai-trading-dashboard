@@ -220,3 +220,78 @@ async def get_watchlist_categories(
         })
     
     return grouped
+
+
+@router.post("/initialize")
+async def initialize_watchlist(
+    token: str = None,
+    session: Session = Depends(get_session)
+) -> dict:
+    """Initialize watchlist with default popular symbols"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    account = await get_current_account(token, session)
+    
+    # Get or create watchlist
+    statement = select(Watchlist).where(Watchlist.mt_account_id == account.id)
+    watchlist = session.exec(statement).first()
+    
+    if not watchlist:
+        watchlist = Watchlist(user_id=account.user_id, mt_account_id=account.id)
+        session.add(watchlist)
+        session.commit()
+        session.refresh(watchlist)
+    
+    # Default popular symbols to add
+    default_symbols = [
+        "EURUSD",  # Most liquid pair
+        "GBPUSD",
+        "USDJPY",
+        "USDCHF",
+        "AUDUSD",
+        "NZDUSD",
+        "USDCAD",
+        "EURJPY",
+        "GBPJPY",
+        "AUDJPY",
+    ]
+    
+    added_count = 0
+    existing_symbols = {item.symbol.name for item in watchlist.items}
+    
+    for symbol_name in default_symbols:
+        # Check if already in watchlist
+        if symbol_name in existing_symbols:
+            logger.debug(f"Symbol {symbol_name} already in watchlist")
+            continue
+        
+        # Find symbol in database
+        statement = select(Symbol).where(Symbol.name == symbol_name)
+        symbol = session.exec(statement).first()
+        
+        if symbol:
+            try:
+                # Add to watchlist
+                item = WatchlistItem(
+                    watchlist_id=watchlist.id,
+                    symbol_id=symbol.id
+                )
+                session.add(item)
+                added_count += 1
+                logger.info(f"Added {symbol_name} to watchlist")
+            except Exception as e:
+                logger.error(f"Error adding {symbol_name} to watchlist: {e}")
+        else:
+            logger.warning(f"Symbol {symbol_name} not found in database")
+    
+    if added_count > 0:
+        session.commit()
+        logger.info(f"Initialized watchlist with {added_count} symbols")
+    
+    return {
+        "success": True,
+        "added_count": added_count,
+        "message": f"Added {added_count} symbols to watchlist"
+    }
+

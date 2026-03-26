@@ -92,10 +92,39 @@ class MT5Manager:
             logger.error(f"Error getting symbols: {e}", exc_info=True)
             return []
     
+    async def select_symbols_for_feed(self, count: int = 100) -> int:
+        """Select top N symbols for live data feed to improve quote availability"""
+        try:
+            logger.info(f"Selecting {count} symbols for live data feed...")
+            symbols = mt5.symbols_get()
+            if not symbols:
+                logger.warning("No symbols available to select")
+                return 0
+            
+            selected_count = 0
+            for symbol in symbols[:count]:
+                try:
+                    if mt5.symbol_select(symbol.name, True):
+                        selected_count += 1
+                except Exception as e:
+                    logger.debug(f"Could not select {symbol.name}: {e}")
+            
+            logger.info(f"Successfully selected {selected_count}/{count} symbols for live data")
+            return selected_count
+        except Exception as e:
+            logger.error(f"Error selecting symbols for feed: {e}", exc_info=True)
+            return 0
+    
     async def get_symbol_info(self, symbol: str) -> Optional[Dict]:
         """Get detailed information about a symbol"""
         try:
             logger.debug(f"Fetching symbol info for {symbol}")
+            
+            # First, select the symbol to ensure it's available for live data
+            selected = mt5.symbol_select(symbol, True)
+            if not selected:
+                logger.warning(f"Failed to select symbol {symbol}")
+            
             info = mt5.symbol_info(symbol)
             if not info:
                 logger.warning(f"Symbol info not found for {symbol}")
@@ -104,9 +133,9 @@ class MT5Manager:
             result = {
                 "name": info.name,
                 "category": self._map_symbol_category(info.path),
-                "bid": info.bid,
-                "ask": info.ask,
-                "spread": info.ask - info.bid,
+                "bid": float(info.bid) if info.bid else 0.0,
+                "ask": float(info.ask) if info.ask else 0.0,
+                "spread": float(info.ask - info.bid) if info.ask and info.bid else 0.0,
                 "digits": info.digits,
                 "point": info.point,
                 "description": info.description,
@@ -120,53 +149,240 @@ class MT5Manager:
     async def get_ticks(self, symbol: str, count: int = 100) -> Optional[List[Dict]]:
         """Get recent ticks for a symbol"""
         try:
-            ticks = mt5.copy_ticks_from(symbol, datetime.utcnow() - timedelta(minutes=10), count)
+            logger.info(f"[GET_TICKS] START: Fetching {count} ticks for {symbol}")
+            
+            # First, select the symbol to ensure it's available for live data
+            selected = mt5.symbol_select(symbol, True)
+            logger.info(f"[GET_TICKS] Symbol selected: {selected}")
+            if not selected:
+                logger.warning(f"[GET_TICKS] Failed to select symbol {symbol} for ticks")
+            
+            # Try copy_ticks_range first (alternative method)
+            logger.info(f"[GET_TICKS] Attempting copy_ticks_range...")
+            now = datetime.utcnow()
+            past = now - timedelta(hours=1)
+            
+            ticks = mt5.copy_ticks_range(symbol, past, now, mt5.COPY_TICKS_ALL)
+            logger.info(f"[GET_TICKS] copy_ticks_range result: {ticks is not None}, type: {type(ticks)}")
+            
             if ticks is None:
+                error = mt5.last_error()
+                logger.warning(f"[GET_TICKS] copy_ticks_range failed: {error}")
+                
+                # Fallback: Try copy_ticks_from
+                logger.info(f"[GET_TICKS] Attempting copy_ticks_from (30 min window)...")
+                past = now - timedelta(minutes=30)
+                ticks = mt5.copy_ticks_from(symbol, past, count, mt5.COPY_TICKS_ALL)
+                logger.info(f"[GET_TICKS] copy_ticks_from result: {ticks is not None}, type: {type(ticks)}")
+                
+                if ticks is None:
+                    error = mt5.last_error()
+                    logger.warning(f"[GET_TICKS] copy_ticks_from failed: {error}")
+                    return None
+            
+            try:
+                ticks_len = len(ticks)
+                logger.info(f"[GET_TICKS] Got {ticks_len} ticks from MT5")
+            except Exception as e:
+                logger.error(f"[GET_TICKS] Error getting length of ticks: {e}")
                 return None
             
             tick_list = []
             for tick in ticks:
-                tick_list.append({
-                    "time": tick.time,
-                    "bid": tick.bid,
-                    "ask": tick.ask,
-                    "last": tick.last,
-                    "volume": tick.volume,
-                })
+                try:
+                    # Handle both regular objects and numpy structured arrays
+                    if hasattr(tick, 'time'):
+                        # Regular object access
+                        tick_dict = {
+                            "time": int(tick.time),
+                            "bid": float(tick.bid),
+                            "ask": float(tick.ask),
+                            "last": float(tick.last) if hasattr(tick, 'last') else None,
+                            "volume": int(tick.volume) if hasattr(tick, 'volume') else 0,
+                        }
+                    else:
+                        # Numpy structured array access using dict-like syntax
+                        tick_dict = {
+                            "time": int(tick['time']),
+                            "bid": float(tick['bid']),
+                            "ask": float(tick['ask']),
+                            "last": float(tick['last']) if 'last' in tick.dtype.names else None,
+                            "volume": int(tick['volume']) if 'volume' in tick.dtype.names else 0,
+                        }
+                    tick_list.append(tick_dict)
+                except Exception as e:
+                    logger.warning(f"[GET_TICKS] Error processing tick: {e}")
+                    continue
+            
+            logger.info(f"[GET_TICKS] SUCCESS: Converted {len(tick_list)} ticks to list")
             return tick_list
         except Exception as e:
-            logger.error(f"Error getting ticks for {symbol}: {e}")
+            logger.error(f"[GET_TICKS] Exception for {symbol}: {e}", exc_info=True)
             return None
+    
+    def _create_candles_from_ticks(self, ticks: List[Dict], timeframe_minutes: int = 60) -> List[Dict]:
+        """Convert tick data into OHLC candles"""
+        logger.info(f"[CREATE_CANDLES] START: Converting {len(ticks)} ticks to {timeframe_minutes}min candles")
+        
+        if not ticks or len(ticks) == 0:
+            logger.warning(f"[CREATE_CANDLES] No ticks provided")
+            return []
+        
+        try:
+            candles = []
+            current_candle = None
+            
+            for tick in ticks:
+                tick_time = tick["time"]
+                # Determine which candle this tick belongs to
+                candle_time = (tick_time // (timeframe_minutes * 60)) * (timeframe_minutes * 60)
+                
+                if current_candle is None or current_candle["time"] != candle_time:
+                    # New candle
+                    if current_candle is not None:
+                        candles.append(current_candle)
+                    
+                    current_candle = {
+                        "time": candle_time,
+                        "open": (tick["bid"] + tick["ask"]) / 2,
+                        "high": (tick["bid"] + tick["ask"]) / 2,
+                        "low": (tick["bid"] + tick["ask"]) / 2,
+                        "close": (tick["bid"] + tick["ask"]) / 2,
+                        "tick_count": 1,
+                    }
+                else:
+                    # Update current candle
+                    mid_price = (tick["bid"] + tick["ask"]) / 2
+                    current_candle["high"] = max(current_candle["high"], mid_price)
+                    current_candle["low"] = min(current_candle["low"], mid_price)
+                    current_candle["close"] = mid_price
+                    current_candle["tick_count"] += 1
+            
+            # Add the last candle
+            if current_candle:
+                candles.append(current_candle)
+            
+            logger.info(f"[CREATE_CANDLES] SUCCESS: Created {len(candles)} candles from {len(ticks)} ticks")
+            return candles
+        except Exception as e:
+            logger.error(f"[CREATE_CANDLES] Error creating candles from ticks: {e}", exc_info=True)
+            return []
     
     async def get_rates(self, symbol: str, timeframe: int, count: int = 100) -> Optional[List[Dict]]:
         """
         Get OHLC candles for a symbol
-        timeframe: 1=M1, 5=M5, 15=M15, 60=H1, 240=H4, 1440=D1
+        timeframe: 1=M1, 5=M5, 15=M15, 30=M30, 60=H1, 240=H4, 1440=D1, 10080=W1, 43200=MN
+        Falls back to creating candles from ticks if OHLC fails.
         """
         try:
-            logger.info(f"Fetching {count} candles for {symbol} (timeframe: {timeframe})")
-            rates = mt5.copy_rates_from(symbol, timeframe, datetime.utcnow(), count)
-            if rates is None:
-                logger.warning(f"No rates retrieved for {symbol}. MT5 error: {mt5.last_error()}")
-                return None
+            logger.info(f"[GET_RATES] START: Fetching {count} candles for {symbol} (timeframe: {timeframe})")
             
-            logger.info(f"Retrieved {len(rates)} candles for {symbol}")
-            candles = []
-            for rate in rates:
-                candles.append({
-                    "time": rate.time,
-                    "open": rate.open,
-                    "high": rate.high,
-                    "low": rate.low,
-                    "close": rate.close,
-                    "tick_volume": rate.tick_volume,
-                    "volume": rate.volume,
-                    "spread": rate.spread,
-                })
-            return candles
-        except Exception as e:
-            logger.error(f"Error getting rates for {symbol}: {e}")
+            # First, select the symbol to ensure it's available for live data
+            selected = mt5.symbol_select(symbol, True)
+            logger.info(f"[GET_RATES] Symbol selected: {selected}")
+            if not selected:
+                logger.warning(f"[GET_RATES] Failed to select symbol {symbol} for rates")
+            
+            now = datetime.utcnow()
+            
+            # Attempt 1: copy_rates_range with historical data
+            logger.info(f"[GET_RATES] Attempt 1: copy_rates_range...")
+            from_date = now - timedelta(days=100)
+            to_date = now + timedelta(days=1)
+            rates = mt5.copy_rates_range(symbol, timeframe, from_date, to_date)
+            logger.info(f"[GET_RATES] copy_rates_range result: {rates is not None}, type: {type(rates)}")
+            
+            # Check if rates is valid (use len() to avoid numpy array truthiness issues)
+            if rates is not None:
+                try:
+                    rates_len = len(rates)
+                    logger.info(f"[GET_RATES] copy_rates_range returned {rates_len} candles")
+                    if rates_len > 0:
+                        rates = rates[-count:] if rates_len > count else rates
+                        logger.info(f"[GET_RATES] SUCCESS: Retrieved {len(rates)} candles via copy_rates_range")
+                        return self._format_candles(rates)
+                    else:
+                        logger.info(f"[GET_RATES] copy_rates_range returned empty array")
+                except Exception as e:
+                    logger.warning(f"[GET_RATES] Error processing copy_rates_range result: {e}")
+            else:
+                error_code = mt5.last_error()
+                logger.info(f"[GET_RATES] copy_rates_range returned None, MT5 error: {error_code}")
+            
+            # Attempt 2: copy_rates_from with past timestamp
+            logger.info(f"[GET_RATES] Attempt 2: copy_rates_from...")
+            past_date = now - timedelta(days=30)
+            rates = mt5.copy_rates_from(symbol, timeframe, past_date, count)
+            logger.info(f"[GET_RATES] copy_rates_from result: {rates is not None}, type: {type(rates)}")
+            
+            if rates is not None:
+                try:
+                    rates_len = len(rates)
+                    logger.info(f"[GET_RATES] copy_rates_from returned {rates_len} candles")
+                    if rates_len > 0:
+                        logger.info(f"[GET_RATES] SUCCESS: Retrieved {len(rates)} candles via copy_rates_from")
+                        return self._format_candles(rates)
+                    else:
+                        logger.info(f"[GET_RATES] copy_rates_from returned empty array")
+                except Exception as e:
+                    logger.warning(f"[GET_RATES] Error processing copy_rates_from result: {e}")
+            else:
+                error_code = mt5.last_error()
+                logger.info(f"[GET_RATES] copy_rates_from returned None, MT5 error: {error_code}")
+            
+            # Attempt 3: Fallback to tick-based candles
+            logger.warning(f"[GET_RATES] OHLC methods failed, attempting fallback to ticks...")
+            ticks = await self.get_ticks(symbol, 500)
+            logger.info(f"[GET_RATES] get_ticks returned: {ticks is not None}, count: {len(ticks) if ticks else 0}")
+            
+            if ticks and len(ticks) > 0:
+                logger.info(f"[GET_RATES] Retrieved {len(ticks)} ticks, converting to candles...")
+                # Convert timeframe number to minutes
+                timeframe_map = {
+                    1: 1,      # M1
+                    5: 5,      # M5
+                    15: 15,    # M15
+                    30: 30,    # M30
+                    60: 60,    # H1
+                    240: 240,  # H4
+                    1440: 1440, # D1
+                }
+                tf_minutes = timeframe_map.get(timeframe, 60)
+                
+                candles = self._create_candles_from_ticks(ticks, tf_minutes)
+                logger.info(f"[GET_RATES] _create_candles_from_ticks returned {len(candles) if candles else 0} candles")
+                if candles:
+                    logger.info(f"[GET_RATES] SUCCESS via fallback: Created {len(candles)} candles from ticks")
+                    return candles[-count:] if len(candles) > count else candles
+                else:
+                    logger.warning(f"[GET_RATES] _create_candles_from_ticks returned empty list")
+            else:
+                logger.warning(f"[GET_RATES] get_ticks returned None or empty")
+            
+            # All methods failed
+            error_code = mt5.last_error()
+            logger.error(f"[GET_RATES] COMPLETE FAILURE for {symbol}. MT5 error: {error_code}")
             return None
+            
+        except Exception as e:
+            logger.error(f"[GET_RATES] Exception in get_rates for {symbol}: {e}", exc_info=True)
+            return None
+    
+    def _format_candles(self, rates) -> List[Dict]:
+        """Format MT5 rates into standard candle format"""
+        candles = []
+        for rate in rates:
+            candles.append({
+                "time": int(rate.time),
+                "open": float(rate.open),
+                "high": float(rate.high),
+                "low": float(rate.low),
+                "close": float(rate.close),
+                "tick_volume": int(rate.tick_volume),
+                "volume": int(rate.volume) if hasattr(rate, 'volume') else 0,
+                "spread": int(rate.spread) if hasattr(rate, 'spread') else 0,
+            })
+        return candles
     
     async def get_account_info(self) -> Optional[Dict]:
         """Get current account information"""

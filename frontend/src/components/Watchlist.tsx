@@ -40,8 +40,15 @@ export default function Watchlist() {
     console.log(`[WATCHLIST] Setting up quote update interval for ${watchlist.length} symbols`);
     
     const updateQuotes = async () => {
-      const symbolNames = watchlist.map((item) => item.symbol_name);
+      const symbolNames = watchlist
+        .map((item) => item.symbol?.name)
+        .filter((name) => name); // Filter out null/undefined
       console.log(`[WATCHLIST] Updating quotes for: ${symbolNames.join(', ')}`);
+      
+      if (symbolNames.length === 0) {
+        console.log('[WATCHLIST] No valid symbol names to fetch quotes for');
+        return;
+      }
       
       try {
         const quotes = await api.getSymbolQuotesBatch(symbolNames);
@@ -49,13 +56,13 @@ export default function Watchlist() {
         
         // Update watchlist items with new bid/ask values
         const updated = watchlist.map((item) => {
-          if (quotes[item.symbol_name]) {
+          if (item.symbol?.name && quotes[item.symbol.name]) {
             return {
               ...item,
               symbol: {
                 ...item.symbol,
-                bid: quotes[item.symbol_name].bid,
-                ask: quotes[item.symbol_name].ask,
+                bid: quotes[item.symbol.name].bid,
+                ask: quotes[item.symbol.name].ask,
               },
             };
           }

@@ -112,9 +112,34 @@ class APIService {
     try {
       const response = await this.client.get('/watchlist/');
       console.log(`[API] Watchlist received: ${response.data.items?.length || 0} items`);
+      
+      // If watchlist is empty, initialize it with default symbols
+      if (!response.data.items || response.data.items.length === 0) {
+        console.log('[API] Watchlist is empty, initializing with default symbols...');
+        await this.initializeWatchlist();
+        // Fetch again after initialization
+        const retryResponse = await this.client.get('/watchlist/');
+        return retryResponse.data;
+      }
+      
       return response.data;
     } catch (error) {
       console.error('[API] Error fetching watchlist:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize watchlist with default symbols
+   */
+  async initializeWatchlist(): Promise<any> {
+    console.log('[API] Initializing watchlist with default symbols...');
+    try {
+      const response = await this.client.post('/watchlist/initialize');
+      console.log('[API] Watchlist initialized:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('[API] Error initializing watchlist:', error);
       throw error;
     }
   }

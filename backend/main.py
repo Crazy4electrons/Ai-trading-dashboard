@@ -15,6 +15,8 @@ import app.api.symbols as symbols_api
 import app.api.watchlist as watchlist_api
 import app.api.account as account_api
 import app.api.candles as candles_api
+import app.api.debug as debug_api
+import app.api.debug_ohlc as debug_ohlc_api
 from app.database import create_db_and_tables, get_session
 from app.services.mt5_adapter import mt5_manager
 from app.services.websocket_service import ws_manager
@@ -91,6 +93,8 @@ app.include_router(symbols_api.router)
 app.include_router(watchlist_api.router)
 app.include_router(account_api.router)
 app.include_router(candles_api.router)
+app.include_router(debug_api.router)
+app.include_router(debug_ohlc_api.router)
 
 
 @app.get("/")

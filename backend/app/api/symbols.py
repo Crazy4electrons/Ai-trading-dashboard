@@ -144,12 +144,16 @@ async def get_symbol_quote(symbol_name: str) -> Dict:
     try:
         quote = await mt5_manager.get_symbol_info(symbol_name)
         if quote:
-            logger.info(f"[SYMBOLS] Live quote for {symbol_name}: bid={quote.get('bid')}, ask={quote.get('ask')}")
+            # Ensure bid, ask, and spread are float values, not None
+            bid = quote.get("bid")
+            ask = quote.get("ask")
+            spread = quote.get("spread")
+            logger.info(f"[SYMBOLS] Live quote for {symbol_name}: bid={bid}, ask={ask}")
             return {
                 "symbol": symbol_name,
-                "bid": quote.get("bid", 0.0),
-                "ask": quote.get("ask", 0.0),
-                "spread": quote.get("spread", 0.0),
+                "bid": bid if bid is not None else 0.0,
+                "ask": ask if ask is not None else 0.0,
+                "spread": spread if spread is not None else 0.0,
             }
         else:
             logger.warning(f"[SYMBOLS] No quote data returned for {symbol_name}")
@@ -160,19 +164,24 @@ async def get_symbol_quote(symbol_name: str) -> Dict:
 
 
 @router.post("/quote/batch")
-async def get_symbol_quotes_batch(request_data: Dict[str, list]) -> Dict[str, Dict]:
+async def get_symbol_quotes_batch(request_data: Dict[str, list]) -> Dict[str, Dict[str, float]]:
     """Get live quotes for multiple symbols"""
     symbol_list = request_data.get("symbols", [])
+    # Filter out None values
+    symbol_list = [s for s in symbol_list if s is not None]
     logger.info(f"[SYMBOLS] Getting batch quotes for {len(symbol_list)} symbols")
     
-    quotes = {}
+    quotes: Dict[str, Dict[str, float]] = {}
     for symbol_name in symbol_list:
         try:
             quote = await mt5_manager.get_symbol_info(symbol_name)
             if quote:
+                # Ensure bid and ask are float values, not None
+                bid = quote.get("bid")
+                ask = quote.get("ask")
                 quotes[symbol_name] = {
-                    "bid": quote.get("bid", 0.0),
-                    "ask": quote.get("ask", 0.0),
+                    "bid": float(bid) if bid is not None else 0.0,
+                    "ask": float(ask) if ask is not None else 0.0,
                 }
             else:
                 logger.warning(f"[SYMBOLS] No data for {symbol_name}")
@@ -231,6 +240,40 @@ async def get_symbol(symbol_name: str, session: Session = Depends(get_session)) 
         "digits": symbol.digits,
         "point": symbol.point,
     }
+
+
+@router.get("/{symbol_name}/ohlc")
+async def get_symbol_ohlc(symbol_name: str, timeframe: int = 60, count: int = 100) -> Dict:
+    """Get OHLC candles for a symbol
+    timeframe: 1=M1, 5=M5, 15=M15, 30=M30, 60=H1, 240=H4, 1440=D1, 10080=W1, 43200=MN
+    """
+    logger.info(f"[SYMBOLS] Getting OHLC for {symbol_name} (TF={timeframe}, count={count})")
+    
+    try:
+        candles = await mt5_manager.get_rates(symbol_name, timeframe, count)
+        if candles:
+            return {
+                "symbol": symbol_name,
+                "timeframe": timeframe,
+                "count": len(candles),
+                "candles": candles,
+            }
+        else:
+            logger.warning(f"[SYMBOLS] No candles retrieved for {symbol_name}")
+            return {
+                "symbol": symbol_name,
+                "timeframe": timeframe,
+                "count": 0,
+                "candles": [],
+            }
+    except Exception as e:
+        logger.error(f"[SYMBOLS] Error getting OHLC for {symbol_name}: {e}", exc_info=True)
+        return {
+            "symbol": symbol_name,
+            "error": str(e),
+            "candles": [],
+        }
+
 
 
 def _group_symbols_by_category(symbols: List[Dict]) -> Dict[str, List[Dict]]:
