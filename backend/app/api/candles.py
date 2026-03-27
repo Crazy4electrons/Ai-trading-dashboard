@@ -33,14 +33,12 @@ async def prefetch_candles_background(symbol: str, timeframe: str, start_from: i
     try:
         logger.info(f"[PREFETCH] Starting background prefetch for {symbol}:{timeframe} from segment {start_from}")
 
-        # Check if already prefetching
         if candle_cache.is_prefetch_in_progress(symbol, timeframe, start_from):
             logger.debug(f"[PREFETCH] Prefetch already in progress for {symbol}:{timeframe}:{start_from}")
             return
 
         candle_cache.mark_prefetch_started(symbol, timeframe, start_from)
 
-        # Calculate how many bars we need to reach our target
         existing_count = len(candle_cache.cache.get(symbol, {}).get(timeframe, []))
         target_count = candle_cache.max_bars_per_symbol
         remaining = target_count - existing_count
@@ -49,9 +47,8 @@ async def prefetch_candles_background(symbol: str, timeframe: str, start_from: i
             logger.debug(f"[PREFETCH] Already have {existing_count} bars, target is {target_count}")
             return
 
-        # Prefetch in segments
         segment_size = candle_cache.prefetch_segment_size
-        segments_needed = (remaining + segment_size - 1) // segment_size  # Ceiling division
+        segments_needed = (remaining + segment_size - 1) // segment_size
 
         for segment in range(segments_needed):
             segment_start = start_from + (segment * segment_size)
@@ -63,15 +60,10 @@ async def prefetch_candles_background(symbol: str, timeframe: str, start_from: i
             logger.debug(f"[PREFETCH] Fetching segment {segment + 1}: {prefetch_count} bars starting from {segment_start}")
 
             try:
-                # Get MT5 timeframe
                 mt5_timeframe = TIMEFRAME_MAP[timeframe]
-
-                # Fetch additional historical data
-                # For backscroll, we need to get older data
                 candles = await mt5_manager.get_rates(symbol, mt5_timeframe, prefetch_count + segment_start)
 
                 if candles and len(candles) > segment_start:
-                    # Take the older portion for backscroll
                     older_candles = candles[-prefetch_count:] if len(candles) > prefetch_count else candles
                     candle_cache.store_candles(symbol, timeframe, older_candles, is_append=True)
                     logger.info(f"[PREFETCH] Successfully prefetched {len(older_candles)} additional candles for {symbol}:{timeframe}")
@@ -95,116 +87,119 @@ async def prefetch_candles_background(symbol: str, timeframe: str, start_from: i
 async def get_candles(
     symbol: str,
     timeframe: str = "1h",
-    count: int = 500,  # Default to 500 candles as requested
-    from_time: Optional[float] = None,  # Unix timestamp for backscroll
+    count: int = 500,
+    segment: int = 0,
+    from_time: Optional[float] = None,
     background_tasks: BackgroundTasks = None,
     token: str = "",
     session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """
-    Get OHLC candlestick data for a symbol with caching and prefetching
+    Get OHLC candlestick data for a symbol with caching and prefetching.
 
-    Query parameters:
-    - timeframe: 1m, 5m, 15m, 1h, 4h, 1d (default: 1h)
-    - count: Number of candles to return (default: 500, max: 2000)
-    - from_time: Unix timestamp to get candles from (for backscroll)
+    Query params:
+      - timeframe: 1m,5m,15m,1h,4h,1d
+      - count: bars per segment (max 500)
+      - segment: 0/latest, 1 older, etc.
     """
-    logger.info(f"[CANDLES] Request received for {symbol}, timeframe={timeframe}, count={count}, from_time={from_time}")
+    logger.info(f"[CANDLES] Request received for {symbol}, timeframe={timeframe}, segment={segment}, count={count}, from_time={from_time}")
 
-    # Verify token if provided
     if token:
         try:
-            logger.debug(f"[CANDLES] Verifying token...")
+            logger.debug("[CANDLES] Verifying token...")
             verify_token(token)
-            logger.debug(f"[CANDLES] Token verified successfully")
+            logger.debug("[CANDLES] Token verified successfully")
         except Exception as e:
             logger.error(f"[CANDLES] Token verification failed: {e}")
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Validate timeframe
     if timeframe not in TIMEFRAME_MAP:
         logger.warning(f"[CANDLES] Invalid timeframe: {timeframe}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid timeframe. Must be one of: {list(TIMEFRAME_MAP.keys())}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid timeframe. Must be one of: {list(TIMEFRAME_MAP.keys())}")
 
-    # Validate count (max 2000 as per cache limit)
-    count = min(max(count, 1), 2000)
-    logger.debug(f"[CANDLES] Count clamped to {count}")
+    count = min(max(count, 1), 1000)
+    if segment < 0:
+        logger.warning(f"[CANDLES] Invalid segment: {segment}")
+        raise HTTPException(status_code=400, detail="Invalid segment. Must be 0 or positive integer")
 
-    # Convert from_time to datetime if provided
-    from_datetime = datetime.fromtimestamp(from_time) if from_time else None
-
+    # FIX: single try/except block — the original had two duplicate except clauses
+    # which caused a SyntaxError and masked real errors.
     try:
-        # Try to get from cache first
-        cached_candles = candle_cache.get_cached_candles(symbol, timeframe, count, from_datetime)
+        mt5_timeframe = TIMEFRAME_MAP[timeframe]
 
-        if cached_candles and len(cached_candles) >= count:
-            logger.info(f"[CANDLES] Cache hit: returning {len(cached_candles)} cached candles for {symbol} ({timeframe})")
+        if segment == 0:
+            logger.debug(f"[CANDLES] Refreshing latest candles for {symbol}:{timeframe} from MT5")
+            try:
+                latest_candles = await mt5_manager.get_rates(symbol, mt5_timeframe, count)
+                if latest_candles and len(latest_candles) > 0:
+                    candle_cache.store_candles(symbol, timeframe, latest_candles, is_append=False)
+                    logger.info(f"[CANDLES] Updated cache with {len(latest_candles)} latest candles for {symbol}:{timeframe}")
+                else:
+                    logger.warning(f"[CANDLES] MT5 returned no latest candles for {symbol}:{timeframe}")
+            except Exception as e:
+                logger.error(f"[CANDLES] Failed to refresh latest candles for {symbol}:{timeframe}: {e}")
 
-            # Start background prefetch if needed
+        cached_segment = candle_cache.get_cached_segment(symbol, timeframe, segment, count)
+        if cached_segment:
+            logger.info(f"[CANDLES] Cache-hit segment {segment} for {symbol}:{timeframe} ({len(cached_segment)} bars)")
+
+            sorted_segment = sorted(cached_segment, key=lambda c: c['time'])
+            total_cached = candle_cache.get_cached_total(symbol, timeframe)
+            has_more = total_cached > (segment + 1) * count
+
             if background_tasks and candle_cache.is_prefetch_needed(symbol, timeframe, count):
                 background_tasks.add_task(prefetch_candles_background, symbol, timeframe)
+                logger.debug(f"[CANDLES] Queued background prefetch for {symbol}:{timeframe}")
 
             return {
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "count": len(cached_candles),
+                "segment": segment,
+                "count": len(sorted_segment),
                 "cached": True,
-                "candles": cached_candles,
+                "has_backscroll": has_more,
+                "candles": sorted_segment,
             }
 
-        # Cache miss or insufficient data - fetch from MT5
-        logger.info(f"[CANDLES] Cache miss or insufficient data - fetching from MT5")
+        # Cache miss — fetch from MT5
+        fetch_count = candle_cache.max_bars_per_symbol
 
-        # Convert timeframe string to MT5 format
-        mt5_timeframe = TIMEFRAME_MAP[timeframe]
-        logger.debug(f"[CANDLES] Converted timeframe {timeframe} to MT5 format: {mt5_timeframe}")
-
-        # For initial load, fetch more than requested to populate cache
-        fetch_count = max(count, candle_cache.prefetch_segment_size)
-        logger.info(f"[CANDLES] Fetching {fetch_count} candles from MT5 for {symbol}")
-
-        # Fetch rates from MT5
+        logger.info(f"[CANDLES] Cache miss: fetching {fetch_count} bars from MT5 for {symbol}:{timeframe}")
         candles = await mt5_manager.get_rates(symbol, mt5_timeframe, fetch_count)
 
-        if candles is None:
-            error_msg = f"Could not fetch candles for symbol {symbol}. Verify symbol exists and MT5 is connected."
-            logger.error(f"[CANDLES] {error_msg}")
+        if candles is None or not candles:
+            error_msg = f"Couldn't load asset pair: {symbol}. Verify symbol exists and MT5 is connected."
+            logger.error(f"[CANDLES-ERROR] {error_msg}")
             raise HTTPException(status_code=404, detail=error_msg)
 
-        if not candles:
-            error_msg = f"No candles available for {symbol}"
-            logger.warning(f"[CANDLES] {error_msg}")
-            raise HTTPException(status_code=404, detail=error_msg)
+        candle_cache.store_candles(symbol, timeframe, candles, is_append=False)
+        logger.info(f"[CANDLES] Stored {len(candles)} candles in cache for {symbol}:{timeframe}")
 
-        # Store in cache
-        candle_cache.store_candles(symbol, timeframe, candles)
+        segment_data = candle_cache.get_cached_segment(symbol, timeframe, segment, count)
+        sorted_segment = sorted(segment_data, key=lambda c: c['time']) if segment_data else []
 
-        # Get the requested portion
-        result_candles = candles[:count]
+        total_cached = candle_cache.get_cached_total(symbol, timeframe)
+        has_more = total_cached > (segment + 1) * count
 
-        logger.info(f"[CANDLES] Successfully retrieved {len(result_candles)} candles for {symbol} ({timeframe}) from MT5")
-
-        # Start background prefetch for more data
         if background_tasks:
             background_tasks.add_task(prefetch_candles_background, symbol, timeframe)
+            logger.debug(f"[CANDLES] Queued background prefetch for {symbol}:{timeframe} after MT5 fetching")
 
         return {
             "symbol": symbol,
             "timeframe": timeframe,
-            "count": len(result_candles),
+            "segment": segment,
+            "count": len(sorted_segment),
             "cached": False,
-            "candles": result_candles,
+            "has_backscroll": has_more,
+            "candles": sorted_segment,
         }
 
     except HTTPException:
         raise
     except Exception as e:
         error_msg = f"Failed to load candles for {symbol}: {str(e)}"
-        logger.error(f"[CANDLES] {error_msg}")
-        logger.error(f"[CANDLES] Full error: {e}", exc_info=True)
+        logger.error(f"[CANDLES-ERROR] {error_msg}", exc_info=True)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -214,7 +209,7 @@ async def get_cache_stats(token: str = "") -> Dict[str, Any]:
     if token:
         try:
             verify_token(token)
-        except Exception as e:
+        except Exception:
             raise HTTPException(status_code=401, detail="Invalid token")
 
     return candle_cache.get_cache_stats()
@@ -226,7 +221,7 @@ async def clear_symbol_cache(symbol: str, token: str = "") -> Dict[str, str]:
     if token:
         try:
             verify_token(token)
-        except Exception as e:
+        except Exception:
             raise HTTPException(status_code=401, detail="Invalid token")
 
     candle_cache.clear_symbol_cache(symbol)
@@ -239,14 +234,9 @@ async def clear_all_cache(token: str = "") -> Dict[str, str]:
     if token:
         try:
             verify_token(token)
-        except Exception as e:
+        except Exception:
             raise HTTPException(status_code=401, detail="Invalid token")
-    try:
-        candle_cache.clear_all_cache()
-        return {"message": "All cache cleared"}
-    except Exception as e:
-        logger.error(f"[CANDLES] Unexpected error fetching candles for {symbol}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching candles: {str(e)}"
-        )
+
+    # FIX: removed erroneous try/except here that referenced undefined `symbol`
+    candle_cache.clear_all_cache()
+    return {"message": "All cache cleared"}

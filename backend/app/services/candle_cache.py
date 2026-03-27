@@ -72,6 +72,43 @@ class CandleCache:
             # Return most recent candles
             return cached_candles[:count]
 
+    def get_cached_segment(self, symbol: str, timeframe: str, segment: int = 0, segment_size: int = 500) -> List[Dict]:
+        """Return a specific segment of cached candles for charting.
+
+        Segment 0 = most recent bars,
+        Segment 1 = previous bars, etc.
+        Cache is stored as chronological order (oldest first) from MT5.
+        """
+        if symbol not in self.cache or timeframe not in self.cache[symbol]:
+            return []
+
+        if segment < 0 or segment_size <= 0:
+            return []
+
+        candles = self.cache[symbol][timeframe]
+        total = len(candles)
+        if total == 0:
+            return []
+
+        # Latest bars are at the end of the list
+        end_index = total - segment * segment_size
+        start_index = max(end_index - segment_size, 0)
+
+        if start_index >= total or end_index <= 0:
+            return []
+
+        segment_data = candles[start_index:end_index]
+
+        self.cache_hits += 1
+        logger.debug(f"[CACHE] Returning segment {segment} for {symbol}:{timeframe} ({len(segment_data)} bars, {start_index}:{end_index} from {total})")
+        return segment_data
+
+    def get_cached_total(self, symbol: str, timeframe: str) -> int:
+        """Return total number of cached candles for symbol/timeframe."""
+        if symbol not in self.cache or timeframe not in self.cache[symbol]:
+            return 0
+        return len(self.cache[symbol][timeframe])
+
     def store_candles(self, symbol: str, timeframe: str, candles: List[Dict], is_append: bool = False):
         """
         Store candles in cache

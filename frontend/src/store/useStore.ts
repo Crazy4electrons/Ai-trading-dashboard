@@ -48,6 +48,7 @@ export const useStore = create<Store>((set) => ({
   selectedSymbol: null,
   quotes: new Map(),
   candles: new Map(),
+  history: [],
 
   // UI state
   isLoading: false,
@@ -178,14 +179,12 @@ useStore.setState({
 });
 
 // Subscribe to selectedSymbol changes and persist to localStorage
-useStore.subscribe(
-  (state) => state.selectedSymbol,
-  (selectedSymbol) => {
-    if (selectedSymbol) {
-      console.log('[STORE] Saving selected symbol to localStorage:', selectedSymbol);
-      localStorage.setItem('selectedSymbol', selectedSymbol);
-    } else {
-      localStorage.removeItem('selectedSymbol');
-    }
+useStore.subscribe((state) => {
+  const selectedSymbol = state.selectedSymbol;
+  if (selectedSymbol) {
+    console.log('[STORE] Saving selected symbol to localStorage:', selectedSymbol);
+    localStorage.setItem('selectedSymbol', selectedSymbol);
+  } else {
+    localStorage.removeItem('selectedSymbol');
   }
-);
+});

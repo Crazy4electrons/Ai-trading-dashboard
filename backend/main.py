@@ -18,7 +18,8 @@ import app.api.account as account_api
 import app.api.candles as candles_api
 import app.api.debug as debug_api
 import app.api.debug_ohlc as debug_ohlc_api
-from app.database import create_db_and_tables, get_session
+from app.database import create_db_and_tables, get_session, SessionLocal
+from app.models import AccountState
 from app.services.mt5_adapter import mt5_manager
 from app.services.websocket_service import ws_manager
 from app.services.polling_service import polling_service
@@ -172,11 +173,45 @@ async def websocket_endpoint(
         }))
         polling_service.start_polling("positions", fetch_positions, account_id)
         
-        # History polling (30 seconds) - only fetch new history
+        # History polling (30 seconds) - fetch latest account state and append to DB
         async def fetch_history():
-            # This would need to be implemented to fetch only new history since last poll
-            return []  # Placeholder
-        
+            try:
+                info = await mt5_manager.get_account_info()
+                if not info:
+                    logger.warning(f"[HISTORY] No account info from MT5 for account {account_id}")
+                    return []
+
+                # Save account state to DB history table
+                try:
+                    with SessionLocal() as session:
+                        state = AccountState(
+                            mt_account_id=account_id,
+                            balance=info.get("balance", 0),
+                            equity=info.get("equity", 0),
+                            margin=info.get("margin", 0),
+                            free_margin=info.get("free_margin", 0),
+                            margin_level=info.get("margin_level", 0),
+                        )
+                        session.add(state)
+                        session.commit()
+
+                    logger.info(f"[HISTORY] Stored account state for account {account_id}")
+                    return [{
+                        "balance": state.balance,
+                        "equity": state.equity,
+                        "margin": state.margin,
+                        "free_margin": state.free_margin,
+                        "margin_level": state.margin_level,
+                        "timestamp": state.timestamp.isoformat(),
+                    }]
+                except Exception as e:
+                    logger.error(f"[HISTORY] Failed to store account history for {account_id}: {e}", exc_info=True)
+                    return []
+
+            except Exception as e:
+                logger.error(f"[HISTORY] Error polling history for {account_id}: {e}", exc_info=True)
+                return []
+
         polling_service.register_callback("history", lambda data: ws_manager.broadcast_to_account(account_id, {
             "type": "history",
             "timestamp": datetime.utcnow().isoformat(),

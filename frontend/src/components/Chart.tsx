@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import { useStore } from '../store/useStore';
 import { getWebSocketClient } from '../App';
@@ -16,124 +16,120 @@ export default function Chart() {
   const [error, setError] = useState<string | null>(null);
   const [hasBackscroll, setHasBackscroll] = useState(false);
   const [isBackscrollLoading, setIsBackscrollLoading] = useState(false);
+  const [chartReady, setChartReady] = useState(false);
   const chartInitializedRef = useRef(false);
   const previousSymbolRef = useRef<string | null>(null);
   const currentTimeframeRef = useRef<TimeframeKey>('1h');
-  const previousSymbolRef = useRef<string | null>(null);
 
-  // Manage WebSocket subscriptions for chart ticks
+  // Track whether a backscroll fetch is in flight so the poll doesn't interfere
+  const backscrollInFlightRef = useRef(false);
+  // Track whether the first segment-0 load has completed
+  const initialLoadDoneRef = useRef(false);
+
+  // ─── WebSocket subscriptions ────────────────────────────────────────────────
   useEffect(() => {
     const ws = getWebSocketClient();
-    if (!ws || !ws.isConnected()) {
-      console.log('[CHART] WebSocket not available for subscriptions');
-      return;
-    }
+    if (!ws || !ws.isConnected()) return;
 
-    // If symbol changed, manage subscriptions
     if (selectedSymbol !== previousSymbolRef.current) {
-      // Unsubscribe from previous symbol if it existed
       if (previousSymbolRef.current) {
-        console.log(`[CHART] Unsubscribing from chart_ticks for ${previousSymbolRef.current}`);
         ws.unsubscribeChartTicks(previousSymbolRef.current);
       }
-
-      // Subscribe to new symbol if selected
       if (selectedSymbol) {
-        console.log(`[CHART] Subscribing to chart_ticks for ${selectedSymbol}`);
         ws.subscribeChartTicks(selectedSymbol);
       }
-
       previousSymbolRef.current = selectedSymbol;
     }
 
     return () => {
-      // On cleanup, unsubscribe if we have a symbol
       if (selectedSymbol && previousSymbolRef.current === selectedSymbol) {
-        console.log(`[CHART] Cleanup: Unsubscribing from chart_ticks for ${selectedSymbol}`);
         ws.unsubscribeChartTicks(selectedSymbol);
       }
     };
   }, [selectedSymbol]);
 
-  // Initialize chart with delay to ensure container has dimensions
+  // ─── Chart initialisation ───────────────────────────────────────────────────
+  // containerRef must ALWAYS be in the DOM — overlays are layered on top via CSS.
   useEffect(() => {
     if (!containerRef.current || chartInitializedRef.current) return;
 
-    // Use a small delay to ensure DOM has settled and container has dimensions
     const initTimer = setTimeout(() => {
       if (!containerRef.current) return;
 
-      const width = containerRef.current.clientWidth;
-      const height = containerRef.current.clientHeight;
+      const w = containerRef.current.clientWidth;
+      const h = containerRef.current.clientHeight;
 
-      console.log(`[CHART] Initializing with dimensions: ${width}x${height}`);
-
-      if (width === 0 || height === 0) {
-        console.error('[CHART] Container has no dimensions! Width:', width, 'Height:', height);
+      if (w === 0 || h === 0) {
+        setTimeout(() => {
+          if (containerRef.current && !chartInitializedRef.current) {
+            const rw = containerRef.current.clientWidth;
+            const rh = containerRef.current.clientHeight;
+            if (rw > 0 && rh > 0) initializeChart(containerRef.current, rw, rh);
+          }
+        }, 500);
         return;
       }
 
-      try {
-        // Create chart
-        const chart = createChart(containerRef.current!, {
-          layout: {
-            background: { type: ColorType.Solid, color: '#0f0f0f' },
-            textColor: '#d1d5db',
-          },
-          width: width,
-          height: height,
-          timeScale: {
-            timeVisible: true,
-            secondsVisible: false,
-          },
-        });
-
-        // Add candlestick series
-        const series = chart.addCandlestickSeries({
-          upColor: '#10b981',
-          downColor: '#ef4444',
-          borderUpColor: '#10b981',
-          borderDownColor: '#ef4444',
-          wickUpColor: '#10b981',
-          wickDownColor: '#ef4444',
-        });
-
-        chartRef.current = chart;
-        seriesRef.current = series;
-        chartInitializedRef.current = true;
-
-        console.log(`[CHART] Chart initialized successfully`);
-
-        // Fit content
-        chart.timeScale().fitContent();
-
-        const handleResize = () => {
-          if (containerRef.current && chartRef.current) {
-            chartRef.current.applyOptions({
-              width: containerRef.current.clientWidth,
-              height: containerRef.current.clientHeight,
-            });
-          }
-        };
-
-        window.addEventListener('resize', handleResize);
-
-        // Store cleanup function reference for later use
-        (window as any).__chartCleanup = () => {
-          window.removeEventListener('resize', handleResize);
-        };
-      } catch (err) {
-        console.error('[CHART] Failed to initialize chart:', err);
-      }
+      initializeChart(containerRef.current, w, h);
     }, 100);
 
+    return () => clearTimeout(initTimer);
+  }, []);
+
+  const initializeChart = (container: HTMLDivElement, width: number, height: number) => {
+    if (chartInitializedRef.current) return;
+
+    try {
+      const chart = createChart(container, {
+        layout: {
+          background: { type: ColorType.Solid, color: '#0f0f0f' },
+          textColor: '#d1d5db',
+        },
+        width,
+        height,
+        timeScale: { timeVisible: true, secondsVisible: false },
+      });
+
+      const series = chart.addCandlestickSeries({
+        upColor: '#10b981',
+        downColor: '#ef4444',
+        borderUpColor: '#10b981',
+        borderDownColor: '#ef4444',
+        wickUpColor: '#10b981',
+        wickDownColor: '#ef4444',
+      });
+
+      chartRef.current = chart;
+      seriesRef.current = series;
+      chartInitializedRef.current = true;
+      setChartReady(true);
+
+      chart.timeScale().fitContent();
+
+      const handleResize = () => {
+        if (containerRef.current && chartRef.current) {
+          chartRef.current.applyOptions({
+            width: containerRef.current.clientWidth,
+            height: containerRef.current.clientHeight,
+          });
+        }
+      };
+      window.addEventListener('resize', handleResize);
+      (window as any).__chartCleanup = () => window.removeEventListener('resize', handleResize);
+    } catch (err) {
+      console.error('[CHART] Failed to initialize chart:', err);
+      chartInitializedRef.current = false;
+    }
+  };
+
+  // ─── Chart cleanup on unmount ───────────────────────────────────────────────
+  useEffect(() => {
     return () => {
-      clearTimeout(initTimer);
-      // Clean up chart when component unmounts
       if (chartRef.current) {
-        console.log('[CHART] Cleaning up chart');
-        (window as any).__chartCleanup?.();
-        chartRef.current.remove();
+        try {
+          (window as any).__chartCleanup?.();
+          chartRef.current.remove();
+        } catch (_) {}
         chartRef.current = null;
         seriesRef.current = null;
         chartInitializedRef.current = false;
@@ -141,269 +137,263 @@ export default function Chart() {
     };
   }, []);
 
-  // Fetch real candles data from API with caching and backscroll
-  const fetchCandles = useCallback(async (fromTime?: number, isBackscroll: boolean = false) => {
+  // ─── Data state ─────────────────────────────────────────────────────────────
+  const segmentSize = 500;
+  const [loadedSegments, setLoadedSegments] = useState<Set<number>>(new Set());
+  const [prefetchingSegments, setPrefetchingSegments] = useState<Set<number>>(new Set());
+  const chartDataRef = useRef<Array<{ time: Time; open: number; high: number; low: number; close: number }>>([]);
+
+  // ─── fetchSegment ────────────────────────────────────────────────────────────
+  const fetchSegment = useCallback(async (
+    segmentIndex: number,
+    isBackscroll: boolean = false,
+    tryCount: number = 0,
+  ) => {
     if (!selectedSymbol) return;
 
-    if (isBackscroll) {
-      setIsBackscrollLoading(true);
-    } else {
-      setIsLoading(true);
+    // FIX 1: Don't let the silent poll run while a backscroll fetch is in flight.
+    // The poll would reset isBackscrollLoading and cause the spinner to flicker or vanish.
+    if (segmentIndex === 0 && !isBackscroll && backscrollInFlightRef.current) {
+      console.log('[CHART] Poll skipped — backscroll in flight');
+      return;
     }
+
+    // FIX 2: Classify this fetch so we only show UI changes for things the user
+    // needs to know about. Silent polls show no spinner at all.
+    const isInitialLoad = segmentIndex === 0 && !isBackscroll && !initialLoadDoneRef.current;
+    const isActualBackscroll = isBackscroll && segmentIndex > 0;
+
+    if (isInitialLoad) {
+      setIsLoading(true);
+    } else if (isActualBackscroll) {
+      backscrollInFlightRef.current = true;
+      setIsBackscrollLoading(true);
+    }
+    // Silent poll (segment 0, initialLoadDone, not backscroll): no spinner change
+
     setError(null);
 
+    const maxRetries = 3;
+    const token = localStorage.getItem('access_token');
+    const tokenParam = token ? `&token=${token}` : '';
+    const url = `http://localhost:8000/api/candles/${selectedSymbol}?timeframe=${timeframe}&count=${segmentSize}&segment=${segmentIndex}${tokenParam}`;
+
+    console.log(`[CHART] fetchSegment=${segmentIndex} isBackscroll=${isBackscroll} retry=${tryCount}`);
+
     try {
-      console.log(`[CHART] Fetching candles for ${selectedSymbol}, timeframe=${timeframe}, fromTime=${fromTime}, isBackscroll=${isBackscroll}`);
-      
-      // Get token from localStorage
-      const token = localStorage.getItem('access_token');
-      const tokenParam = token ? `&token=${token}` : '';
-      
-      // Build URL with backscroll support
-      let url = `http://localhost:8000/api/candles/${selectedSymbol}?timeframe=${timeframe}&count=500${tokenParam}`;
-      if (fromTime) {
-        url += `&from_time=${fromTime}`;
-      }
-      
-      console.log(`[CHART] Request URL: ${url}`);
-      
-      // Call backend API to get cached/real MT5 candle data
       const response = await fetch(url);
-      console.log(`[CHART] Response status: ${response.status} (${response.statusText})`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        console.error(`[CHART] HTTP Error: ${response.status}`, errorData);
-        
-        // Log error to console as requested
-        console.error(`[CHART] Failed to load candles for ${selectedSymbol}: ${errorData.detail || response.statusText}`);
-        
-        throw new Error(errorData.detail || `Failed to fetch candles: ${response.statusText}`);
+        const message = errorData.detail || response.statusText || 'Unknown error';
+        console.error(`[CHART] HTTP ${response.status} for segment=${segmentIndex}:`, message);
+
+        if (tryCount < maxRetries) {
+          await new Promise((r) => setTimeout(r, 2 ** tryCount * 1000));
+          return fetchSegment(segmentIndex, isBackscroll, tryCount + 1);
+        }
+
+        if (isInitialLoad) {
+          setError(`Couldn't load ${selectedSymbol}. ${message}`);
+        }
+        return;
       }
 
       const data = await response.json();
-      console.log(`[CHART] Successfully received data:`, data);
-      
-      const candles = data.candles as Array<{
-        time: number;
-        open: number;
-        high: number;
-        low: number;
-        close: number;
-      }>;
 
-      console.log(`[CHART] Candles array length: ${candles?.length || 0}`);
-      console.log(`[CHART] Cached: ${data.cached}`);
-      
-      if (!candles || candles.length === 0) {
-        console.error(`[CHART] No candles in response`);
-        throw new Error('No candle data received');
+      // ── Empty response ───────────────────────────────────────────────────
+      if (!data || !Array.isArray(data.candles) || data.candles.length === 0) {
+        if (segmentIndex === 0 && !isBackscroll) {
+          if (tryCount < maxRetries) {
+            await new Promise((r) => setTimeout(r, 2 ** tryCount * 1000));
+            return fetchSegment(segmentIndex, isBackscroll, tryCount + 1);
+          }
+          if (isInitialLoad) {
+            setError(`No candle data returned for ${selectedSymbol}`);
+          }
+        } else {
+          // Backscroll segment came back empty — no more history on this broker
+          console.info(`[CHART] Segment ${segmentIndex} empty — no more history`);
+          setHasBackscroll(false);
+        }
+        return;
       }
 
-      console.log(`[CHART] First candle: time=${candles[0].time}, open=${candles[0].open}, close=${candles[0].close}`);
-      console.log(`[CHART] Last candle: time=${candles[candles.length-1].time}, open=${candles[candles.length-1].open}, close=${candles[candles.length-1].close}`);
+      // ── Map candles ──────────────────────────────────────────────────────
+      const candles = data.candles.map((c: any) => ({
+        time: c.time as Time,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+      }));
 
-      // Convert MT5 timestamps and format for TradingView
-      const chartData: Array<{ time: Time; open: number; high: number; low: number; close: number }> =
-        candles.map((candle) => ({
-          time: (candle.time || Math.floor(Date.now() / 1000)) as Time,
-          open: Number(candle.open),
-          high: Number(candle.high),
-          low: Number(candle.low),
-          close: Number(candle.close),
-        }));
+      // ── Merge into chart data ────────────────────────────────────────────
+      // Always merge by time key so we never lose backscrolled history when
+      // a segment-0 poll comes in.
+      const existingMap = new Map(chartDataRef.current.map((c) => [c.time, c]));
+      candles.forEach((c: { time: Time; open: number; high: number; low: number; close: number }) =>
+        existingMap.set(c.time, c),
+      );
+      chartDataRef.current = Array.from(existingMap.values()).sort(
+        (a, b) => (a.time as number) - (b.time as number),
+      );
 
-      console.log(`[CHART] Formatted ${chartData.length} candles for chart`);
-
-      // Set data on chart
+      // Push to TradingView
       if (seriesRef.current) {
-        if (isBackscroll && chartData.length > 0) {
-          // For backscroll, merge with existing data
-          console.log(`[CHART] Merging backscroll data...`);
-          // Note: TradingView handles backscroll automatically when we setData with older data
+        seriesRef.current.setData(chartDataRef.current);
+        if (isInitialLoad) {
+          chartRef.current?.timeScale().fitContent();
         }
-        
-        console.log(`[CHART] Setting data on chart series...`);
-        seriesRef.current.setData(chartData);
-        console.log(`[CHART] Chart series data set`);
-      } else {
-        console.error(`[CHART] Series reference is null!`);
       }
 
-      // Fit content
-      if (chartRef.current) {
-        console.log(`[CHART] Fitting chart content to screen...`);
-        chartRef.current.timeScale().fitContent();
-        console.log(`[CHART] Chart content fitted`);
-      } else {
-        console.error(`[CHART] Chart reference is null!`);
+      setLoadedSegments((prev) => new Set(prev).add(segmentIndex));
+
+      if (isInitialLoad) {
+        initialLoadDoneRef.current = true;
       }
 
-      // Update backscroll availability
-      setHasBackscroll(chartData.length >= 500); // If we got 500 candles, there might be more
+      // FIX 3: Only trust `has_backscroll` from the server response.
+      // The old code forced backscroll=true whenever candle count < segmentSize,
+      // which caused an eternal "Loading older candles..." spinner on demo accounts
+      // that legitimately have fewer bars (e.g. 7 candles on a new demo account).
+      const serverSaysMore = data.has_backscroll === true;
+      setHasBackscroll(serverSaysMore);
 
-      console.log(`[CHART] Chart successfully updated with ${chartData.length} candles`);
-      setError(null);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error loading chart data';
-      console.error('[CHART] Error fetching candles:', errorMessage);
-      console.error('[CHART] Full error:', err);
-      setError(`Could not load asset pair ${selectedSymbol}. ${errorMessage}`);
-      
-      // Fallback: show mock data for demo
-      console.log('Loading fallback mock data...');
-      try {
-        const now = Math.floor(Date.now() / 1000);
-        const mockCandles: Array<{ time: Time; open: number; high: number; low: number; close: number }> = [];
-        
-        for (let i = 30; i >= 0; i--) {
-          const time = now - i * 3600; // 1 hour intervals
-          const open = 1.0800 + (Math.random() - 0.5) * 0.02;
-          const high = open + Math.random() * 0.01;
-          const low = open - Math.random() * 0.01;
-          const close = low + Math.random() * (high - low);
-          
-          mockCandles.push({
-            time: time as Time,
-            open: parseFloat(open.toFixed(5)),
-            high: parseFloat(high.toFixed(5)),
-            low: parseFloat(low.toFixed(5)),
-            close: parseFloat(close.toFixed(5)),
-          });
-        }
-        
-        if (seriesRef.current) {
-          seriesRef.current.setData(mockCandles);
-        }
-        if (chartRef.current) {
-          chartRef.current.timeScale().fitContent();
-        }
-        
-        console.log('Fallback mock data loaded');
-        setError(`Could not load ${selectedSymbol} - showing demo data`);
-      } catch (fallbackErr) {
-        console.error('Fallback data error:', fallbackErr);
-      }
-    } finally {
-      setIsLoading(false);
-      setIsBackscrollLoading(false);
-    }
-  }, [selectedSymbol, timeframe]);
-        }
+      console.log(`[CHART] Segment ${segmentIndex} OK: ${candles.length} candles, has_backscroll=${serverSaysMore}`);
 
-        console.log(`[CHART] First candle: time=${candles[0].time}, open=${candles[0].open}, close=${candles[0].close}`);
-        console.log(`[CHART] Last candle: time=${candles[candles.length-1].time}, open=${candles[candles.length-1].open}, close=${candles[candles.length-1].close}`);
-
-        // Convert MT5 timestamps and format for TradingView
-        const chartData: Array<{ time: Time; open: number; high: number; low: number; close: number }> =
-          candles.map((candle) => ({
-            time: (candle.time || Math.floor(Date.now() / 1000)) as Time,
-            open: Number(candle.open),
-            high: Number(candle.high),
-            low: Number(candle.low),
-            close: Number(candle.close),
-          }));
-
-        console.log(`[CHART] Formatted ${chartData.length} candles for chart`);
-
-        // Set data on chart
-        if (seriesRef.current) {
-          console.log(`[CHART] Setting data on chart series...`);
-          seriesRef.current.setData(chartData);
-          console.log(`[CHART] Chart series data set`);
-        } else {
-          console.error(`[CHART] Series reference is null!`);
-        }
-
-        // Fit content
-        if (chartRef.current) {
-          console.log(`[CHART] Fitting chart content to screen...`);
-          chartRef.current.timeScale().fitContent();
-          console.log(`[CHART] Chart content fitted`);
-        } else {
-          console.error(`[CHART] Chart reference is null!`);
-        }
-
-        console.log(`[CHART] Chart successfully updated with ${chartData.length} candles`);
-        setError(null);
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Unknown error loading chart data';
-        console.error('[CHART] Error fetching candles:', errorMessage);
-        console.error('[CHART] Full error:', err);
-        setError(errorMessage);
-        
-        // Fallback: show mock data for demo
-        console.log('Loading fallback mock data...');
-        try {
-          const now = Math.floor(Date.now() / 1000);
-          const mockCandles: Array<{ time: Time; open: number; high: number; low: number; close: number }> = [];
-          
-          for (let i = 30; i >= 0; i--) {
-            const time = now - i * 3600; // 1 hour intervals
-            const open = 1.0800 + (Math.random() - 0.5) * 0.02;
-            const high = open + Math.random() * 0.01;
-            const low = open - Math.random() * 0.01;
-            const close = low + Math.random() * (high - low);
-            
-            mockCandles.push({
-              time: time as Time,
-              open: parseFloat(open.toFixed(5)),
-              high: parseFloat(high.toFixed(5)),
-              low: parseFloat(low.toFixed(5)),
-              close: parseFloat(close.toFixed(5)),
+      // Kick off prefetch of next segments
+      if (!isBackscroll && segmentIndex === 0 && serverSaysMore) {
+        [1, 2, 3].forEach((nextSeg) => {
+          if (!loadedSegments.has(nextSeg) && !prefetchingSegments.has(nextSeg)) {
+            setPrefetchingSegments((prev) => new Set(prev).add(nextSeg));
+            fetchSegment(nextSeg, true).finally(() => {
+              setPrefetchingSegments((prev) => {
+                const copy = new Set(prev);
+                copy.delete(nextSeg);
+                return copy;
+              });
             });
           }
-          
-          if (seriesRef.current) {
-            seriesRef.current.setData(mockCandles);
-          }
-          if (chartRef.current) {
-            chartRef.current.timeScale().fitContent();
-          }
-          
-          console.log('Fallback mock data loaded');
-        } catch (fallbackErr) {
-          console.error('Fallback data error:', fallbackErr);
-        }
-      } finally {
+        });
+      }
+
+    } catch (err) {
+      console.error('[CHART] fetchSegment error:', err);
+      if (isInitialLoad) {
+        setError(`Unexpected error loading ${selectedSymbol}`);
+      }
+    } finally {
+      // FIX 4: Always clean up the correct loading flag in finally, even on error.
+      if (isInitialLoad) {
         setIsLoading(false);
       }
-    };
+      if (isActualBackscroll) {
+        setIsBackscrollLoading(false);
+        backscrollInFlightRef.current = false;
+      }
+    }
+  }, [selectedSymbol, timeframe, loadedSegments, prefetchingSegments]);
 
-  }, [selectedSymbol, timeframe]);
-
-  // Handle symbol/timeframe changes
+  // ─── Symbol / timeframe change detector ─────────────────────────────────────
   useEffect(() => {
-    if (selectedSymbol && (selectedSymbol !== previousSymbolRef.current || timeframe !== currentTimeframeRef.current)) {
-      console.log(`[CHART] Symbol/timeframe changed: ${previousSymbolRef.current}/${currentTimeframeRef.current} -> ${selectedSymbol}/${timeframe}`);
+    if (!selectedSymbol || !chartInitializedRef.current) return;
+
+    if (
+      selectedSymbol !== previousSymbolRef.current ||
+      timeframe !== currentTimeframeRef.current
+    ) {
+      console.log(`[CHART] Symbol/timeframe changed → ${selectedSymbol}/${timeframe}`);
       previousSymbolRef.current = selectedSymbol;
       currentTimeframeRef.current = timeframe;
-      fetchCandles();
-    }
-  }, [selectedSymbol, timeframe, fetchCandles]);
 
-  // Handle backscroll when user scrolls left
+      // Full reset for new symbol/timeframe
+      chartDataRef.current = [];
+      initialLoadDoneRef.current = false;
+      backscrollInFlightRef.current = false;
+      setLoadedSegments(new Set());
+      setPrefetchingSegments(new Set());
+      setHasBackscroll(false);
+      setIsLoading(true);
+      setIsBackscrollLoading(false);
+      setError(null);
+
+      fetchSegment(0, false);
+    }
+  }, [selectedSymbol, timeframe, chartReady, fetchSegment]);
+
+  // ─── Ensure first load when chart becomes ready ──────────────────────────────
+  useEffect(() => {
+    if (!chartReady || !selectedSymbol) return;
+    if (!loadedSegments.has(0) && !initialLoadDoneRef.current) {
+      console.log('[CHART] chartReady — forcing initial fetchSegment(0)');
+      fetchSegment(0, false);
+    }
+  }, [chartReady, selectedSymbol, timeframe, loadedSegments, fetchSegment]);
+
+  // ─── Silent background poll (5 s) ────────────────────────────────────────────
+  useEffect(() => {
+    if (!chartReady || !selectedSymbol) return;
+
+    const id = setInterval(() => {
+      // FIX 5: Only poll once the initial load is done and no backscroll is running.
+      if (initialLoadDoneRef.current && !backscrollInFlightRef.current) {
+        fetchSegment(0, false);
+      }
+    }, 5000);
+
+    return () => clearInterval(id);
+  }, [chartReady, selectedSymbol, timeframe, fetchSegment]);
+
+  // ─── Backscroll on visible range change ──────────────────────────────────────
   useEffect(() => {
     if (!chartRef.current || !selectedSymbol) return;
 
     const handleVisibleTimeRangeChange = (timeRange: any) => {
       if (!timeRange || !hasBackscroll || isBackscrollLoading) return;
 
-      // Check if user is near the left edge (backscroll needed)
-      const fromTime = timeRange.from;
-      if (fromTime && fromTime < Date.now() / 1000 - 86400) { // If looking more than 1 day back
-        console.log('[CHART] User scrolled back, loading more data...');
-        fetchCandles(fromTime, true);
+      const data = chartDataRef.current;
+      if (!data || data.length < 2) return;
+
+      const earliestTime = data[0].time as number;
+      const latestTime = data[data.length - 1].time as number;
+      if (typeof timeRange.from !== 'number') return;
+
+      const totalSpan = latestTime - earliestTime;
+      if (totalSpan <= 0) return;
+
+      const relative = ((timeRange.from as number) - earliestTime) / totalSpan;
+      if (relative > 0.2) return;
+
+      const nextSegment =
+        Math.max(...Array.from(loadedSegments.values()).concat([0])) + 1;
+
+      // Cap at 10 segments to avoid hammering a broker with limited history
+      if (nextSegment > 10) return;
+
+      if (!loadedSegments.has(nextSegment) && !prefetchingSegments.has(nextSegment)) {
+        console.log(`[CHART] Backscroll → segment ${nextSegment}`);
+        setPrefetchingSegments((prev) => new Set(prev).add(nextSegment));
+        fetchSegment(nextSegment, true).finally(() => {
+          setPrefetchingSegments((prev) => {
+            const copy = new Set(prev);
+            copy.delete(nextSegment);
+            return copy;
+          });
+        });
       }
     };
 
     const chart = chartRef.current;
     chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleTimeRangeChange);
+    return () => chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleTimeRangeChange);
+  }, [selectedSymbol, hasBackscroll, isBackscrollLoading, fetchSegment, loadedSegments, prefetchingSegments]);
 
-    return () => {
-      chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleTimeRangeChange);
-    };
-  }, [selectedSymbol, hasBackscroll, isBackscrollLoading, fetchCandles]);
+  // ─── Render ──────────────────────────────────────────────────────────────────
+  const hasChartData = chartDataRef.current.length > 0;
+  const showEmpty = !selectedSymbol;
+  const showError = !!error && !isLoading;
+  const showInitialLoading = !error && isLoading && !hasChartData && !!selectedSymbol;
 
   return (
     <div className="chart-container">
@@ -432,54 +422,63 @@ export default function Chart() {
               </button>
             ))}
           </div>
-
           <div className="chart-settings">
-            <button className="btn-settings" title="Chart settings">
-              ⚙️
-            </button>
+            <button className="btn-settings" title="Chart settings">⚙️</button>
           </div>
         </div>
       </div>
 
-      {!selectedSymbol ? (
-        <div className="chart-body chart-empty">
-          <div className="chart-placeholder">
-            <p>📊 No symbol selected</p>
-            <p>Select a symbol from the watchlist to see the chart</p>
+      {/*
+        The canvas container is ALWAYS mounted so TradingView can attach to it on init.
+        States (empty / loading / error) are CSS overlays — they never unmount the canvas.
+      */}
+      <div className="chart-body chart-ready" style={{ position: 'relative' }}>
+        <div
+          ref={containerRef}
+          className="chart-inner"
+          style={{ visibility: showEmpty || showError ? 'hidden' : 'visible' }}
+        />
+
+        {showEmpty && (
+          <div className="chart-overlay chart-empty">
+            <div className="chart-placeholder">
+              <p>📊 No symbol selected</p>
+              <p>Select a symbol from the watchlist to see the chart</p>
+            </div>
           </div>
-        </div>
-      ) : error ? (
-        <div className="chart-body chart-error">
-          <div className="chart-placeholder">
-            <p>⚠️ Error loading chart</p>
-            <p style={{ color: '#ef4444', fontSize: '0.85em', marginTop: '8px' }}>{error}</p>
-            <p style={{ color: '#6b7280', fontSize: '0.8em', marginTop: '4px' }}>
-              Check browser console for details
-            </p>
+        )}
+
+        {showError && (
+          <div className="chart-overlay chart-error">
+            <div className="chart-placeholder">
+              <p>⚠️ Error loading chart</p>
+              <p className="chart-error-msg">{error}</p>
+              <p className="chart-error-note">Check browser console for details</p>
+            </div>
           </div>
-        </div>
-      ) : (isLoading || isBackscrollLoading) ? (
-        <div className="chart-body chart-loading">
-          <div className="chart-placeholder">
-            <div className="spinner"></div>
-            <p>{isBackscrollLoading ? 'Loading more data...' : 'Loading chart...'}</p>
+        )}
+
+        {showInitialLoading && (
+          <div className="chart-overlay chart-loading">
+            <div className="chart-placeholder">
+              <div className="spinner"></div>
+              <p>Loading chart for {selectedSymbol}...</p>
+            </div>
           </div>
-        </div>
-      ) : (
-        <div className="chart-body">
-          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-        </div>
-      )}
-    </div>
-  );
-}
-        <div className="chart-body chart-loading">
-          <div className="spinner"></div>
-          <p>Loading chart...</p>
-        </div>
-      ) : (
-        <div className="chart-body" ref={containerRef} />
-      )}
+        )}
+
+        {/*
+          Small backscroll banner — only shown while a historical fetch is actively
+          in flight AND the server confirmed more data exists.
+          FIX: Previously shown permanently because isBackscrollLoading never cleared.
+        */}
+        {isBackscrollLoading && hasChartData && (
+          <div className="chart-backscroll-indicator">
+            <div className="spinner small"></div>
+            <span>Loading older candles...</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

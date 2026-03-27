@@ -94,6 +94,7 @@ export interface TradingState {
   selectedSymbol: string | null;
   quotes: Map<string, Quote>;
   candles: Map<string, Candle[]>;
+  history: any[];  // <: incoming historical updates from account-history stream
 }
 
 export interface UIState {

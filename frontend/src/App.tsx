@@ -77,13 +77,12 @@ function App() {
 
           ws.onMessage('account', (data) => {
             console.log('[WEBSOCKET] Account update (polled):', data);
-            // Update store with account data - only if changed
             useStore.setState((state) => {
               if (!state.accountInfo ||
                   state.accountInfo.balance !== data.balance ||
                   state.accountInfo.equity !== data.equity ||
                   state.accountInfo.margin !== data.margin ||
-                  state.accountInfo.margin_free !== data.margin_free) {
+                  state.accountInfo.free_margin !== data.free_margin) {
                 return { accountInfo: data };
               }
               return {};
@@ -92,14 +91,13 @@ function App() {
 
           ws.onMessage('positions', (data) => {
             console.log('[WEBSOCKET] Positions update (polled):', data);
-            // Update store with positions - only if changed
             useStore.setState((state) => {
               const currentPositions = state.positions || [];
               if (currentPositions.length !== data.length ||
                   currentPositions.some((pos, i) => 
                     !data[i] || 
                     pos.ticket !== data[i].ticket || 
-                    pos.profit !== data[i].profit ||
+                    pos.profit_loss !== data[i].profit_loss ||
                     pos.volume !== data[i].volume
                   )) {
                 return { positions: data };
