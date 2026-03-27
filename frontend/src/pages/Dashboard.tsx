@@ -7,8 +7,9 @@ import AccountPanel from '../components/AccountPanel';
 import '../styles/Dashboard.css';
 
 export default function Dashboard() {
-  const { isAuthenticated, accountNumber, server, wsConnected } = useStore();
-  const [isLoading, setIsLoading] = useState(true);
+  const { isAuthenticated, accountNumber, server, wsConnected, selectedSymbol, setSelectedSymbol, watchlist } = useStore();
+  const [symbolsCache, setSymbolsCache] = useState<Map<string, any[]>>(new Map());
+  const [lastSymbolsFetch, setLastSymbolsFetch] = useState<number>(0);
 
   useEffect(() => {
     const initializeDashboard = async () => {
@@ -24,6 +25,15 @@ export default function Dashboard() {
         const watchlistData = await api.getWatchlist();
         console.log(`[DASHBOARD] Watchlist loaded: ${watchlistData.items?.length || 0} items`);
         useStore.setState({ watchlist: watchlistData.items });
+
+        // Auto-select first symbol if none is selected
+        if (!selectedSymbol && watchlistData.items?.length > 0) {
+          const firstSymbol = watchlistData.items[0].symbol?.name;
+          if (firstSymbol) {
+            console.log('[DASHBOARD] Auto-selecting first symbol:', firstSymbol);
+            setSelectedSymbol(firstSymbol);
+          }
+        }
 
         // Fetch account info
         console.log('[DASHBOARD] Loading account info...');
@@ -50,7 +60,7 @@ export default function Dashboard() {
     if (isAuthenticated) {
       initializeDashboard();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, selectedSymbol, setSelectedSymbol]);
 
   const handleLogout = async () => {
     try {

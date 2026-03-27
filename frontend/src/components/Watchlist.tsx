@@ -31,6 +31,8 @@ export default function Watchlist() {
   }, [watchlist]);
 
   // Fetch live quotes for watchlist symbols
+  // NOTE: These quotes are also broadcast via WebSocket watch_quotes stream
+  // The polling serves as a fallback and ensures periodic updates even if WebSocket messages are missed
   useEffect(() => {
     if (watchlist.length === 0) {
       console.log('[WATCHLIST] No symbols in watchlist to fetch quotes for');

@@ -157,5 +157,35 @@ const loadExpandedCategories = () => {
   return new Set(['Forex']); // Default
 };
 
+// Load persisted selected symbol from localStorage
+const loadSelectedSymbol = () => {
+  try {
+    const stored = localStorage.getItem('selectedSymbol');
+    if (stored) {
+      console.log('[STORE] Restoring selected symbol from localStorage:', stored);
+      return stored;
+    }
+  } catch (e) {
+    console.error('Error loading selected symbol:', e);
+  }
+  return null;
+};
+
 // Initialize with persisted state
-useStore.setState({ expandedCategories: loadExpandedCategories() as Set<string> });
+useStore.setState({ 
+  expandedCategories: loadExpandedCategories() as Set<string>,
+  selectedSymbol: loadSelectedSymbol(),
+});
+
+// Subscribe to selectedSymbol changes and persist to localStorage
+useStore.subscribe(
+  (state) => state.selectedSymbol,
+  (selectedSymbol) => {
+    if (selectedSymbol) {
+      console.log('[STORE] Saving selected symbol to localStorage:', selectedSymbol);
+      localStorage.setItem('selectedSymbol', selectedSymbol);
+    } else {
+      localStorage.removeItem('selectedSymbol');
+    }
+  }
+);

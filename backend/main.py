@@ -4,6 +4,7 @@ TradeMatrix Backend - Main FastAPI Application
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, Depends, Query, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,8 @@ import app.api.debug_ohlc as debug_ohlc_api
 from app.database import create_db_and_tables, get_session
 from app.services.mt5_adapter import mt5_manager
 from app.services.websocket_service import ws_manager
+from app.services.polling_service import polling_service
+from app.services.candle_cache import candle_cache
 from app.config import SYMBOL_CATEGORIES
 
 # Setup logging
@@ -119,10 +122,11 @@ async def websocket_endpoint(
     token: str = Query(None),
     session: Session = Depends(get_session)
 ):
-    """WebSocket endpoint for real-time data"""
+    """WebSocket endpoint for real-time data with subscription support"""
+    import json
+    from app.security import verify_token
     
     # Verify token
-    from app.security import verify_token
     if not token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="No token provided")
         return
@@ -142,23 +146,115 @@ async def websocket_endpoint(
     # Register connection
     await ws_manager.connect(client_id, account_id)
     
+    # Set up polling for this account (only if not already polling)
+    if not polling_service.get_active_pollers():
+        logger.info(f"[MAIN] Setting up polling for account {account_id}")
+        
+        # Account data polling (10 seconds)
+        async def fetch_account_data():
+            return await mt5_manager.get_account_info()
+        
+        polling_service.register_callback("account", lambda data: ws_manager.broadcast_to_account(account_id, {
+            "type": "account",
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": data
+        }))
+        polling_service.start_polling("account", fetch_account_data, account_id)
+        
+        # Positions polling (5 seconds)
+        async def fetch_positions():
+            return await mt5_manager.get_positions()
+        
+        polling_service.register_callback("positions", lambda data: ws_manager.broadcast_to_account(account_id, {
+            "type": "positions",
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": data
+        }))
+        polling_service.start_polling("positions", fetch_positions, account_id)
+        
+        # History polling (30 seconds) - only fetch new history
+        async def fetch_history():
+            # This would need to be implemented to fetch only new history since last poll
+            return []  # Placeholder
+        
+        polling_service.register_callback("history", lambda data: ws_manager.broadcast_to_account(account_id, {
+            "type": "history",
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": data
+        }))
+        polling_service.start_polling("history", fetch_history, account_id)
+    
     try:
-        while True:
-            # Wait for message or connection closure
-            try:
-                # Receive message (this blocks until message arrives)
-                message = await websocket.receive_text()
-                
-                # Handle client messages (echo back or process commands)
-                import json
-                data = json.loads(message)
-                
-                if data.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
-                
-            except Exception as e:
-                logger.debug(f"Error receiving message: {e}")
-                break
+        # Start message reader and writer tasks
+        async def read_messages():
+            """Read incoming messages (commands) from client"""
+            while True:
+                try:
+                    message = await websocket.receive_text()
+                    data = json.loads(message)
+                    
+                    command_type = data.get("type")
+                    
+                    # Handle subscription commands (only watch_quotes and chart_ticks allowed)
+                    if command_type == "subscribe_watch_quotes":
+                        await ws_manager.subscribe_watch_quotes(client_id, account_id)
+                        await websocket.send_json({"type": "subscribed", "stream": "watch_quotes"})
+                        logger.info(f"[WS] Client {client_id} subscribed to watch_quotes")
+                    
+                    elif command_type == "unsubscribe_watch_quotes":
+                        await ws_manager.unsubscribe_watch_quotes(client_id, account_id)
+                        await websocket.send_json({"type": "unsubscribed", "stream": "watch_quotes"})
+                        logger.info(f"[WS] Client {client_id} unsubscribed from watch_quotes")
+                    
+                    elif command_type == "subscribe_chart_ticks":
+                        symbol = data.get("symbol")
+                        if symbol:
+                            await ws_manager.subscribe_chart_ticks(client_id, account_id, symbol)
+                            await websocket.send_json({"type": "subscribed", "stream": "chart_ticks", "symbol": symbol})
+                            logger.info(f"[WS] Client {client_id} subscribed to chart_ticks for {symbol}")
+                    
+                    elif command_type == "unsubscribe_chart_ticks":
+                        symbol = data.get("symbol")
+                        if symbol:
+                            await ws_manager.unsubscribe_chart_ticks(client_id, account_id, symbol)
+                            await websocket.send_json({"type": "unsubscribed", "stream": "chart_ticks", "symbol": symbol})
+                            logger.info(f"[WS] Client {client_id} unsubscribed from chart_ticks for {symbol}")
+                    
+                    elif command_type == "ping":
+                        await websocket.send_json({"type": "pong"})
+                    
+                    else:
+                        logger.warning(f"[WS] Unknown command type: {command_type}")
+                        await websocket.send_json({"type": "error", "message": f"Unknown command: {command_type}"})
+                    
+                except Exception as e:
+                    logger.debug(f"Error reading message from {client_id}: {e}")
+                    break
+        
+        async def write_messages():
+            """Send queued messages to client"""
+            queue = await ws_manager.get_client_queue(client_id)
+            while True:
+                try:
+                    message = await queue.get()
+                    await websocket.send_json(message)
+                except Exception as e:
+                    logger.debug(f"Error writing message to {client_id}: {e}")
+                    break
+        
+        # Run both tasks concurrently
+        read_task = asyncio.create_task(read_messages())
+        write_task = asyncio.create_task(write_messages())
+        
+        # Wait for either task to complete
+        done, pending = await asyncio.wait(
+            [read_task, write_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
     
     except Exception as e:
         logger.error(f"WebSocket error for {client_id}: {e}")

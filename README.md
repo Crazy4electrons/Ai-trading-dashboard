@@ -103,15 +103,38 @@ MT5_DEFAULT_SERVER=MetaQuotes-Demo
 
 3. **Start the backend server:**
 
+**Option A: Standard HTTP/1.1 (default)**
 ```bash
 cd backend
 uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+**Option B: HTTP/2 + WebSocket (recommended for better performance)**
+```bash
+cd backend
+uv run hypercorn main:app --bind 0.0.0.0:8000 --reload
+```
+
+Or use the convenience scripts:
+```bash
+cd backend
+# PowerShell:
+./run_http2.ps1
+# Or Python:
+uv run python run_http2.py
+```
+
+**Benefits of HTTP/2:**
+- Multiplexing: Multiple concurrent requests over one connection
+- Reduced latency for REST API calls (symbols, watchlist, candles)
+- WebSocket continues to work normally
+- Better performance for high-frequency updates
+- Native h2c (HTTP/2 cleartext) support in development
+
 The backend will:
 - Initialize SQLite database at `backend/database.db`
-- Start FastAPI server on `http://localhost:8000`
-- WebSocket endpoint available at `ws://localhost:8000/ws`
+- Start FastAPI server on `http://localhost:8000` (or `http://8000` for h2c)
+- WebSocket endpoint available at `ws://localhost:8000/ws` (works with both HTTP/1.1 and HTTP/2)
 
 **API Documentation** (Swagger): http://localhost:8000/docs
 
@@ -151,6 +174,41 @@ Once logged in, the frontend connects via WebSocket to receive live updates:
 - **Position updates**: Open trades and P&L
 
 Message batching (every 100-200ms) ensures efficient bandwidth usage.
+
+## ⚡ Performance & Protocols
+
+### HTTP/2 Support
+The backend supports both HTTP/1.1 and HTTP/2 protocols:
+
+| Protocol | Server | Benefit | Use Case |
+|----------|--------|---------|----------|
+| **HTTP/1.1** | Uvicorn | Stable, widely compatible | Default, backward compatible |
+| **HTTP/2** | Hypercorn | Multiplexing, lower latency | Better for high-frequency API calls (recommended) |
+
+**To use HTTP/2 with Hypercorn:**
+```bash
+uv run hypercorn main:app --bind 0.0.0.0:8000 --reload
+```
+
+Or use the convenience script:
+```bash
+./run_http2.ps1  # PowerShell
+# or
+uv run python run_http2.py  # Python
+```
+
+**Verify HTTP/2 is active:**
+- Open browser DevTools → Network → Check "Protocol" column
+- HTTP/2 requests show `h2` or `h2c`
+- WebSocket connections work seamlessly with both protocols
+
+### Real-Time Data Strategy
+
+| Component | Protocol | Latency | Bandwidth |
+|-----------|----------|---------|-----------|
+| **Quotes, Positions** | WebSocket | < 100ms | Optimized (batched) |
+| **REST API** | HTTP/2 (Hypercorn) | 10-50ms | Multiplexed |
+| **Charts** | HTTP + REST | 20-100ms | Efficient |
 
 ## 📊 Key Endpoints
 

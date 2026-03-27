@@ -137,6 +137,34 @@ export class WebSocketClient {
   }
 
   /**
+   * Subscribe to watchlist quote updates
+   */
+  subscribeWatchQuotes(): void {
+    this.send({ type: 'subscribe_watch_quotes' });
+  }
+
+  /**
+   * Unsubscribe from watchlist quote updates
+   */
+  unsubscribeWatchQuotes(): void {
+    this.send({ type: 'unsubscribe_watch_quotes' });
+  }
+
+  /**
+   * Subscribe to chart tick updates for a specific symbol
+   */
+  subscribeChartTicks(symbol: string): void {
+    this.send({ type: 'subscribe_chart_ticks', symbol });
+  }
+
+  /**
+   * Unsubscribe from chart tick updates for a specific symbol
+   */
+  unsubscribeChartTicks(symbol: string): void {
+    this.send({ type: 'unsubscribe_chart_ticks', symbol });
+  }
+
+  /**
    * Send ping to keep connection alive
    */
   ping(): void {
