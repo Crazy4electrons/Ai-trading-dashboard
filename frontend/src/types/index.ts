@@ -3,7 +3,7 @@
  */
 
 export interface LoginRequest {
-  server: string;
+  server?: string;  // Optional - if not provided, tries admin login
   account_number: number;
   password: string;
 }
@@ -13,6 +13,7 @@ export interface LoginResponse {
   token_type: string;
   account_id: string;
   account_number: number;
+  role?: string;  // "admin" or "user"
 }
 
 export interface Symbol {
@@ -83,6 +84,7 @@ export interface AuthState {
   accountId: string | null;
   accountNumber: number | null;
   server: string | null;
+  role: string | null;
   isAuthenticated: boolean;
 }
 

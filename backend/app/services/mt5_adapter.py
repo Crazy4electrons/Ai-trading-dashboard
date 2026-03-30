@@ -3,7 +3,7 @@ MT5 adapter service - handles all MetaTrader5 connections and data access
 """
 import MetaTrader5 as mt5
 from typing import List, Optional, Dict, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import logging
 
@@ -15,18 +15,97 @@ class MT5Manager:
     
     def __init__(self):
         self.connections: Dict[str, bool] = {}  # account_id -> is_connected
+        self.is_initialized = False  # Track whether MT5 terminal has been initialized globally
     
-    async def initialize(self):
-        """Initialize MT5 terminal"""
-        try:
-            if not mt5.initialize():
-                logger.error(f"MT5 initialization failed, error code: {mt5.last_error()}")
-                return False
-            logger.info("MT5 initialized successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error initializing MT5: {e}")
-            return False
+    async def initialize(self, login: Optional[int] = None, password: Optional[str] = None, 
+                         server: Optional[str] = None, max_retries: int = 3):
+        """
+        Initialize MT5 terminal with optional credentials and retry logic
+        
+        Args:
+            login: Trading account number (optional)
+            password: Trading account password (optional)
+            server: Trade server name (optional)
+            max_retries: Number of retry attempts (default: 3)
+            
+        Returns:
+            Tuple[bool, Optional[str]]: (success, error_message)
+        """
+        # If credentials provided, initialize with them (direct connection with account)
+        if login is not None and password is not None and server is not None:
+            logger.info(f"[MT5-INIT] Attempting to initialize with credentials (account: {login}, server: {server})")
+            
+            for attempt in range(max_retries):
+                try:
+                    # Initialize MT5 with credentials for better account authorization
+                    init_result = mt5.initialize(
+                        login=login,
+                        password=password,
+                        server=server,
+                        timeout=60000
+                    )
+                    
+                    if init_result:
+                        logger.info(f"[MT5-INIT] Successfully initialized with credentials (attempt {attempt + 1}/{max_retries})")
+                        self.is_initialized = True
+                        return True, None
+                    
+                    error_code = mt5.last_error()
+                    logger.warning(f"[MT5-INIT] Initialization with credentials failed (attempt {attempt + 1}/{max_retries}), error code: {error_code}")
+                    
+                    # Exponential backoff: 1s, 2s, 4s
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logger.info(f"[MT5-INIT] Retrying in {wait_time}s...")
+                        await asyncio.sleep(wait_time)
+                    
+                    # Check if this is an authorization-specific error (-6)
+                    if error_code == -6:
+                        return False, f"Authorization failed (error {error_code}): Invalid credentials or server misconfiguration"
+                    
+                except Exception as e:
+                    logger.error(f"[MT5-INIT] Exception during initialization attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+            
+            # All retries exhausted with credentials
+            error_code = mt5.last_error()
+            error_msg = f"Failed to initialize MT5 after {max_retries} attempts (error: {error_code})"
+            logger.error(f"[MT5-INIT] {error_msg}")
+            return False, error_msg
+        
+        # Original behavior: initialize without credentials if already initialized
+        if self.is_initialized:
+            logger.debug("[MT5-INIT] MT5 already initialized, skipping")
+            return True, None
+        
+        # Initialize terminal without credentials (find automatically)
+        logger.info("[MT5-INIT] Initializing MT5 terminal without credentials (auto-detect mode)")
+        
+        for attempt in range(max_retries):
+            try:
+                if mt5.initialize():
+                    logger.info(f"[MT5-INIT] MT5 initialized successfully (attempt {attempt + 1}/{max_retries})")
+                    self.is_initialized = True
+                    return True, None
+                
+                error_code = mt5.last_error()
+                logger.warning(f"[MT5-INIT] Initialization failed (attempt {attempt + 1}/{max_retries}), error code: {error_code}")
+                
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.info(f"[MT5-INIT] Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    
+            except Exception as e:
+                logger.error(f"[MT5-INIT] Exception during initialization attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        
+        error_code = mt5.last_error()
+        error_msg = f"MT5 initialization failed after {max_retries} attempts (error: {error_code})"
+        logger.error(f"[MT5-INIT] {error_msg}")
+        return False, error_msg
     
     async def shutdown(self):
         """Shutdown MT5 terminal"""
@@ -157,7 +236,9 @@ class MT5Manager:
             if not selected:
                 logger.warning(f"[GET_TICKS] Failed to select symbol {symbol} for ticks")
 
-            now = datetime.utcnow()
+            # CRITICAL: Use explicit UTC-aware datetime to avoid timezone interpretation issues
+            # MetaTrader5 expects UTC times and returns UTC Unix timestamps (seconds since epoch)
+            now = datetime.now(tz=timezone.utc)
 
             # Estimate number of hours of ticks to retrieve based on desired count
             tick_rate_per_hour = 3600  # conservative guess: 1 tick/sec (varies by instrument)
@@ -264,7 +345,12 @@ class MT5Manager:
         return tick_list
     
     def _create_candles_from_ticks(self, ticks: List[Dict], timeframe_minutes: int = 60) -> List[Dict]:
-        """Convert tick data into OHLC candles"""
+        """
+        Convert tick data into OHLC candles
+        
+        Note: tick['time'] is a Unix timestamp in UTC seconds from MetaTrader5.
+        No timezone conversion needed - ticks are already in UTC format.
+        """
         logger.info(f"[CREATE_CANDLES] START: Converting {len(ticks)} ticks to {timeframe_minutes}min candles")
         
         if not ticks or len(ticks) == 0:
@@ -276,7 +362,7 @@ class MT5Manager:
             current_candle = None
             
             for tick in ticks:
-                tick_time = tick["time"]
+                tick_time = tick["time"]  # Unix timestamp (UTC seconds since epoch)
                 # Determine which candle this tick belongs to
                 candle_time = (tick_time // (timeframe_minutes * 60)) * (timeframe_minutes * 60)
                 
@@ -326,7 +412,11 @@ class MT5Manager:
             if not selected:
                 logger.warning(f"[GET_RATES] Failed to select symbol {symbol} for rates")
 
-            now = datetime.utcnow()
+            # CRITICAL: Use explicit UTC-aware datetime to avoid timezone interpretation issues
+            # When backend and MT5 are in different timezones, naive UTC datetimes cause MT5 to
+            # misinterpret requests, returning fewer candles. Explicit timezone.utc prevents this.
+            # All times must be UTC: copy_rates_from/range, copy_ticks_from/range all require UTC.
+            now = datetime.now(tz=timezone.utc)
 
             def process_rates(source: str, rates) -> Optional[List[Dict]]:
                 if rates is None:
@@ -348,17 +438,19 @@ class MT5Manager:
                 logger.warning(f"[GET_RATES] {source} produced {len(formatted)} candles (requested {count}) - falling back")
                 return None
 
-            # Attempt A
-            logger.info("[GET_RATES] Attempt A: copy_rates_from (from now)")
+            # Attempt A: Most reliable - explicit date range without ambiguity
+            logger.info("[GET_RATES] Attempt A: copy_rates_range (365d) - Most reliable with explicit UTC range")
             try:
-                rates = mt5.copy_rates_from(symbol, timeframe, now, count)
-                might_be = process_rates("copy_rates_from", rates)
+                from_date = now - timedelta(days=365)
+                to_date = now + timedelta(minutes=5)  # Slight future buffer to capture latest bar
+                rates = mt5.copy_rates_range(symbol, timeframe, from_date, to_date)
+                might_be = process_rates("copy_rates_range(365d)", rates)
                 if might_be:
                     return might_be
             except Exception as e:
-                logger.warning(f"[GET_RATES] copy_rates_from exception: {e}")
+                logger.warning(f"[GET_RATES] copy_rates_range(365d) exception: {e}")
 
-            # Attempt B
+            # Attempt B: Faster fallback with smaller window
             logger.info("[GET_RATES] Attempt B: copy_rates_range (30d)")
             try:
                 from_date = now - timedelta(days=30)
@@ -370,19 +462,18 @@ class MT5Manager:
             except Exception as e:
                 logger.warning(f"[GET_RATES] copy_rates_range(30d) exception: {e}")
 
-            # Attempt C
-            logger.info("[GET_RATES] Attempt C: copy_rates_range (365d)")
+            # Attempt C: Previous Attempt A - less reliable due to "from now" ambiguity
+            logger.info("[GET_RATES] Attempt C: copy_rates_from (from now)")
             try:
-                from_date = now - timedelta(days=365)
-                rates = mt5.copy_rates_range(symbol, timeframe, from_date, now)
-                might_be = process_rates("copy_rates_range(365d)", rates)
+                rates = mt5.copy_rates_from(symbol, timeframe, now, count)
+                might_be = process_rates("copy_rates_from", rates)
                 if might_be:
                     return might_be
             except Exception as e:
-                logger.warning(f"[GET_RATES] copy_rates_range(365d) exception: {e}")
+                logger.warning(f"[GET_RATES] copy_rates_from exception: {e}")
 
-            # Attempt D
-            logger.info("[GET_RATES] Attempt D: copy_rates_from_pos (0)")
+            # Attempt D: Index-based methods (no timezone issues)
+            logger.info("[GET_RATES] Attempt D: copy_rates_from_pos (index 0)")
             try:
                 rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
                 might_be = process_rates("copy_rates_from_pos(0)", rates)
@@ -391,18 +482,8 @@ class MT5Manager:
             except Exception as e:
                 logger.warning(f"[GET_RATES] copy_rates_from_pos(0) exception: {e}")
 
-            # Attempt D2
-            logger.info("[GET_RATES] Attempt D2: copy_rates_from_pos (1)")
-            try:
-                rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, count)
-                might_be = process_rates("copy_rates_from_pos(1)", rates)
-                if might_be:
-                    return might_be
-            except Exception as e:
-                logger.warning(f"[GET_RATES] copy_rates_from_pos(1) exception: {e}")
-
-            # Attempt E: ticks fallback
-            logger.warning("[GET_RATES] Fall back to ticks to build candles")
+            # Attempt E: Tick fallback - last resort
+            logger.info("[GET_RATES] Attempt E: Fallback to ticks to build candles")
             try:
                 ratios = {1: 60, 5: 45, 15: 30, 30: 25, 60: 20, 240: 12, 1440: 6}
                 tick_factor = ratios.get(timeframe, 30)
@@ -432,11 +513,16 @@ class MT5Manager:
             return None
 
     def _format_candles(self, rates) -> List[Dict]:
-        """Format MT5 rates into standard candle format"""
+        """
+        Format MT5 rates into standard candle format
+        
+        Note: rate.time is a Unix timestamp in UTC seconds (seconds since 1970.01.01 UTC).
+        Frontend chart library (TradingView) handles Unix timestamps correctly, so no conversion needed.
+        """
         candles = []
         for rate in rates:
             candles.append({
-                "time": int(rate.time),
+                "time": int(rate.time),  # Unix timestamp (UTC seconds) - already in correct format for frontend
                 "open": float(rate.open),
                 "high": float(rate.high),
                 "low": float(rate.low),

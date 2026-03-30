@@ -6,7 +6,7 @@ import { AuthState, TradingState, UIState, AccountInfo, Symbol, Position } from 
 
 interface Store extends AuthState, TradingState, UIState {
   // Auth actions
-  setAuth: (token: string, accountId: string, accountNumber: number, server: string) => void;
+  setAuth: (token: string, accountId: string, accountNumber: number, server: string, role?: string) => void;
   clearAuth: () => void;
 
   // Trading data actions
@@ -38,6 +38,7 @@ export const useStore = create<Store>((set) => ({
   accountId: null,
   accountNumber: null,
   server: null,
+  role: null,
   isAuthenticated: false,
 
   // Trading state
@@ -57,12 +58,13 @@ export const useStore = create<Store>((set) => ({
   expandedCategories: new Set(['Forex']), // Default to Forex expanded
 
   // Auth actions
-  setAuth: (token, accountId, accountNumber, server) =>
+  setAuth: (token, accountId, accountNumber, server, role = 'user') =>
     set({
       accessToken: token,
       accountId,
       accountNumber,
       server,
+      role,
       isAuthenticated: true,
       error: null,
     }),
@@ -73,6 +75,7 @@ export const useStore = create<Store>((set) => ({
       accountId: null,
       accountNumber: null,
       server: null,
+      role: null,
       isAuthenticated: false,
       watchlist: [],
       accountInfo: null,

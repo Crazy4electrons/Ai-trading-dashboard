@@ -3,6 +3,7 @@ TradeMatrix Backend - Main FastAPI Application
 """
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -18,17 +19,46 @@ import app.api.account as account_api
 import app.api.candles as candles_api
 import app.api.debug as debug_api
 import app.api.debug_ohlc as debug_ohlc_api
+import app.api.admin as admin_api
+import app.api.terminal_admin as terminal_admin_api
 from app.database import create_db_and_tables, get_session, SessionLocal
 from app.models import AccountState
 from app.services.mt5_adapter import mt5_manager
 from app.services.websocket_service import ws_manager
 from app.services.polling_service import polling_service
-from app.services.candle_cache import candle_cache
-from app.config import SYMBOL_CATEGORIES
+from app.services.candle_cache import candle_cache, CandleCacheService
+from app.services.cache_worker import cache_worker
+from app.services.terminal_manager import init_terminal_manager
+from app.config import SYMBOL_CATEGORIES, CACHE_WORKER_ENABLED
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+async def admin_broadcast_updates():
+    """Background task: Periodically broadcast admin status updates via WebSocket"""
+    from app.services.polling_service import polling_service
+    import asyncio
+    
+    logger.info("[ADMIN_BROADCAST] Started admin update broadcaster")
+    
+    while True:
+        try:
+            await asyncio.sleep(5)  # Broadcast every 5 seconds
+            
+            # Get current polling status
+            polling_status = polling_service.get_all_poller_status()
+            pollers_list = list(polling_status.values())
+            
+            # Broadcast polling update
+            await ws_manager.broadcast_admin_update("polling_status", pollers_list)
+            
+            logger.debug(f"[ADMIN_BROADCAST] Sent polling status update with {len(pollers_list)} pollers")
+            
+        except Exception as e:
+            logger.error(f"[ADMIN_BROADCAST] Error broadcasting admin update: {e}")
+            await asyncio.sleep(1)  # Brief delay before retry
 
 
 @asynccontextmanager
@@ -42,25 +72,54 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
     logger.info("[STARTUP] Database initialized")
     
-    logger.info("[STARTUP] Initializing MT5...")
-    init_result = await mt5_manager.initialize()
-    logger.info(f"[STARTUP] MT5 initialization result: {init_result}")
+    # Initialize terminal manager for multi-user support
+    mt5_main_path = os.getenv("MT5_MAIN_TERMINAL_PATH", "C:/Program Files/MetaTrader 5")
+    mt5_user_base_path = os.getenv("MT5_USER_TERMINALS_PATH", "C:/MT5_UserTerminals")
+    try:
+        init_terminal_manager(mt5_main_path, mt5_user_base_path)
+        logger.info(f"[STARTUP] Terminal manager initialized")
+        logger.info(f"  - Main terminal path: {mt5_main_path}")
+        logger.info(f"  - User terminals path: {mt5_user_base_path}")
+    except Exception as e:
+        logger.error(f"[STARTUP] Failed to initialize terminal manager: {e}")
+        raise
     
-    if init_result:
-        logger.info("[STARTUP] Loading symbols from MT5...")
-        try:
-            symbols = await mt5_manager.get_symbols()
-            logger.info(f"[STARTUP] Successfully loaded {len(symbols)} symbols from MT5")
-        except Exception as e:
-            logger.error(f"[STARTUP] Error loading symbols: {e}")
+    # Initialize cache service and configuration
+    session = SessionLocal()
+    try:
+        cache_service = CandleCacheService(session)
+        logger.info("[STARTUP] Cache service initialized")
+    finally:
+        session.close()
+    
+    # NOTE: MT5 initialization is deferred to user login flow via auth.py
+    # This prevents authorization failures at startup when no account is logged in.
+    # MT5 will be initialized when the first user logs in with valid credentials.
+    logger.info("[STARTUP] MT5 initialization deferred to login flow")
     
     # Start WebSocket batch processor
     logger.info("[STARTUP] Starting WebSocket batch processor...")
     asyncio.create_task(ws_manager.start_batch_processor())
     logger.info("[STARTUP] WebSocket batch processor started")
     
+    # Start admin WebSocket broadcaster (sends real-time admin status updates)
+    logger.info("[STARTUP] Starting admin WebSocket broadcaster...")
+    asyncio.create_task(admin_broadcast_updates())
+    logger.info("[STARTUP] Admin WebSocket broadcaster started")
+    
+    # Start cache worker for background candle syncing (if enabled in config)
+    if CACHE_WORKER_ENABLED:
+        logger.info("[STARTUP] Starting cache worker...")
+        cache_worker.start()
+        logger.info("[STARTUP] Cache worker started (background prefetching enabled)")
+    else:
+        logger.info("[STARTUP] Cache worker disabled - data will be lazy-loaded on-demand")
+    
     logger.info("=" * 60)
     logger.info("TradeMatrix backend ready!")
+    logger.info("[INFO] MT5 will be initialized on first user login")
+    if not CACHE_WORKER_ENABLED:
+        logger.info("[INFO] Cache is lazy-loaded: data fetched when charts are viewed")
     logger.info("=" * 60)
     
     yield
@@ -69,6 +128,9 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("Shutting down TradeMatrix backend...")
     logger.info("=" * 60)
+    if CACHE_WORKER_ENABLED:
+        cache_worker.stop()
+        logger.info("[SHUTDOWN] Cache worker stopped")
     await mt5_manager.shutdown()
     logger.info("TradeMatrix backend shutdown complete")
     logger.info("=" * 60)
@@ -93,6 +155,8 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(auth_api.router)
+app.include_router(admin_api.router)
+app.include_router(terminal_admin_api.router)
 app.include_router(symbols_api.router)
 app.include_router(watchlist_api.router)
 app.include_router(account_api.router)
@@ -254,6 +318,21 @@ async def websocket_endpoint(
                             await ws_manager.unsubscribe_chart_ticks(client_id, account_id, symbol)
                             await websocket.send_json({"type": "unsubscribed", "stream": "chart_ticks", "symbol": symbol})
                             logger.info(f"[WS] Client {client_id} unsubscribed from chart_ticks for {symbol}")
+                    
+                    elif command_type == "subscribe_admin_status":
+                        # Only allow admin role to subscribe to admin updates
+                        if token_data.get("role") == "admin":
+                            await ws_manager.subscribe_admin_status(client_id)
+                            await websocket.send_json({"type": "subscribed", "stream": "admin_status"})
+                            logger.info(f"[WS] Admin client {client_id} subscribed to admin_status")
+                        else:
+                            await websocket.send_json({"type": "error", "message": "Unauthorized: admin role required"})
+                            logger.warning(f"[WS] Non-admin client {client_id} attempted admin subscription")
+                    
+                    elif command_type == "unsubscribe_admin_status":
+                        await ws_manager.unsubscribe_admin_status(client_id)
+                        await websocket.send_json({"type": "unsubscribed", "stream": "admin_status"})
+                        logger.info(f"[WS] Client {client_id} unsubscribed from admin_status")
                     
                     elif command_type == "ping":
                         await websocket.send_json({"type": "pong"})

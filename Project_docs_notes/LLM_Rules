@@ -1,0 +1,12 @@
+# LLM rules must follow
+- this are all the rules that the LLM must follow when generating code
+
+** rules **
+- The LLM must not generate code that has been deleted in the recent edits.
+- always read markdown files in the project_docs_notes folder for context before generating code.
+- alwaysmake sure you understand a library before using it in code generation. If you are not sure about how to use a library, ask for clarification or read the documentation.
+
+- use metatrader5_python_docs.md for understanding how to use the MetaTrader5 library in the backend code.
+- use lightweight-charts-python - README.md for understanding how to use the lightweight-charts-python library in the frontend code.
+
+update this file as user adds more rules or edits the existing rules.

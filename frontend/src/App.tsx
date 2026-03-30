@@ -4,6 +4,7 @@ import { WebSocketClient } from './services/websocket';
 import api from './services/api';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import AdminPanel from './pages/AdminPanel';
 import './App.css';
 
 // Global WebSocket instance for access from components
@@ -13,20 +14,74 @@ export function getWebSocketClient(): WebSocketClient | null {
   return globalWebSocketClient;
 }
 
+/**
+ * Decode JWT token (without verification - just read claims)
+ */
+function decodeToken(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    // Decode the payload (second part)
+    const decoded = JSON.parse(atob(parts[1]));
+    return decoded;
+  } catch (error) {
+    console.error('[APP] Error decoding token:', error);
+    return null;
+  }
+}
+
+/**
+ * Check if token is expired
+ */
+function isTokenExpired(token: string): boolean {
+  const decoded = decodeToken(token);
+  if (!decoded || !decoded.exp) return false;
+  
+  // exp is in seconds, current time is in ms
+  const expiryTime = decoded.exp * 1000;
+  const now = Date.now();
+  
+  return now > expiryTime;
+}
+
 function App() {
-  const { isAuthenticated, accessToken, setWSConnected } = useStore();
+  const { isAuthenticated, accessToken, role, setWSConnected } = useStore();
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    // Check if token exists in localStorage
+    // Check if token exists in localStorage and is still valid
     const savedToken = localStorage.getItem('access_token');
     if (savedToken) {
-      api.setToken(savedToken);
-      useStore.setState({
-        accessToken: savedToken,
-        isAuthenticated: true,
-      });
+      // Validate token hasn't expired
+      if (isTokenExpired(savedToken)) {
+        console.log('[APP] Token has expired, clearing auth');
+        localStorage.removeItem('access_token');
+        useStore.setState({
+          accessToken: null,
+          isAuthenticated: false,
+        });
+      } else {
+        api.setToken(savedToken);
+        useStore.setState({
+          accessToken: savedToken,
+          isAuthenticated: true,
+        });
+      }
     }
+
+    // Set up callback for when API receives 401 responses
+    api.setOnUnauthorized(() => {
+      console.log('[APP] API unauthorized callback triggered - clearing auth and redirecting to login');
+      localStorage.removeItem('access_token');
+      useStore.setState({
+        isAuthenticated: false,
+        accessToken: null,
+        accountId: null,
+        accountNumber: null,
+        server: null,
+      });
+    });
   }, []);
 
   useEffect(() => {
@@ -157,7 +212,16 @@ function App() {
 
   return (
     <div className="app">
-      {isAuthenticated ? <Dashboard /> : <Login />}
+      {!isAuthenticated ? (
+        // Not logged in - show login screen
+        <Login />
+      ) : isAuthenticated && role === 'admin' ? (
+        // Admin logged in - show admin panel
+        <AdminPanel />
+      ) : (
+        // Regular user logged in - show dashboard
+        <Dashboard />
+      )}
     </div>
   );
 }

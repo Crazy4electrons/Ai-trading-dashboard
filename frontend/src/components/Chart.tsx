@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import { useStore } from '../store/useStore';
 import { getWebSocketClient } from '../App';
+import apiService from '../services/api';
 import '../styles/Chart.css';
 
 type TimeframeKey = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
@@ -174,32 +175,12 @@ export default function Chart() {
     setError(null);
 
     const maxRetries = 3;
-    const token = localStorage.getItem('access_token');
-    const tokenParam = token ? `&token=${token}` : '';
-    const url = `http://localhost:8000/api/candles/${selectedSymbol}?timeframe=${timeframe}&count=${segmentSize}&segment=${segmentIndex}${tokenParam}`;
 
     console.log(`[CHART] fetchSegment=${segmentIndex} isBackscroll=${isBackscroll} retry=${tryCount}`);
 
     try {
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const message = errorData.detail || response.statusText || 'Unknown error';
-        console.error(`[CHART] HTTP ${response.status} for segment=${segmentIndex}:`, message);
-
-        if (tryCount < maxRetries) {
-          await new Promise((r) => setTimeout(r, 2 ** tryCount * 1000));
-          return fetchSegment(segmentIndex, isBackscroll, tryCount + 1);
-        }
-
-        if (isInitialLoad) {
-          setError(`Couldn't load ${selectedSymbol}. ${message}`);
-        }
-        return;
-      }
-
-      const data = await response.json();
+      // Use apiService with centralized token handling and authorization header
+      const data = await apiService.getCandles(selectedSymbol, timeframe, segmentSize);
 
       // ── Empty response ───────────────────────────────────────────────────
       if (!data || !Array.isArray(data.candles) || data.candles.length === 0) {
@@ -281,7 +262,13 @@ export default function Chart() {
     } catch (err) {
       console.error('[CHART] fetchSegment error:', err);
       if (isInitialLoad) {
-        setError(`Unexpected error loading ${selectedSymbol}`);
+        setError(`Couldn't load ${selectedSymbol}. Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
+      
+      // Retry on error for initial load
+      if (isInitialLoad && tryCount < maxRetries) {
+        await new Promise((r) => setTimeout(r, 2 ** tryCount * 1000));
+        return fetchSegment(segmentIndex, isBackscroll, tryCount + 1);
       }
     } finally {
       // FIX 4: Always clean up the correct loading flag in finally, even on error.

@@ -119,6 +119,13 @@ export class WebSocketClient {
   }
 
   /**
+   * Subscribe to a message type (alias for onMessage)
+   */
+  subscribe(type: string, handler: (data: any) => void): void {
+    this.onMessage(type, handler);
+  }
+
+  /**
    * Remove a message handler
    */
   offMessage(type: string): void {

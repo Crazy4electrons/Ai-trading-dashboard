@@ -50,6 +50,14 @@
   flex: 0 0 auto;
 }
 
+/* Analytics section */
+.dashboard-analytics {
+  padding: var(--space-lg);
+  border-bottom: 1px solid var(--border-color);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
 /* Main content area */
 .dashboard-content {
   display: flex;

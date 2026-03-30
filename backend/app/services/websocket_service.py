@@ -20,6 +20,7 @@ class WebSocketManager:
         # Separate subscription tracking by stream type
         self.watch_quotes_subscribers: Dict[str, Set[str]] = {}  # account_id -> set of client_ids
         self.chart_ticks_subscribers: Dict[str, Dict[str, Set[str]]] = {}  # account_id -> symbol -> set of client_ids
+        self.admin_subscribers: Set[str] = set()  # Set of admin client_ids subscribed to admin updates
         
         self.batch_interval = batch_interval_ms / 1000.0  # Convert to seconds
         self.message_queue: asyncio.Queue = asyncio.Queue()
@@ -56,6 +57,9 @@ class WebSocketManager:
                 for symbol, clients in symbol_subs.items():
                     clients.discard(client_id)
             
+            # Remove from admin subscribers
+            self.admin_subscribers.discard(client_id)
+            
             logger.info(f"Client {client_id} disconnected")
     
     async def subscribe_watch_quotes(self, client_id: str, account_id: str):
@@ -86,6 +90,53 @@ class WebSocketManager:
             symbol in self.chart_ticks_subscribers[account_id]):
             self.chart_ticks_subscribers[account_id][symbol].discard(client_id)
             logger.info(f"Client {client_id} unsubscribed from chart_ticks for {symbol}")
+    
+    async def subscribe_admin_status(self, client_id: str):
+        """Subscribe client to admin status updates (cache, terminals, polling, database)"""
+        self.admin_subscribers.add(client_id)
+        logger.info(f"Client {client_id} subscribed to admin_status updates")
+    
+    async def unsubscribe_admin_status(self, client_id: str):
+        """Unsubscribe client from admin status updates"""
+        self.admin_subscribers.discard(client_id)
+        logger.info(f"Client {client_id} unsubscribed from admin_status updates")
+    
+    async def broadcast_admin_update(self, update_type: str, data: Dict):
+        """Broadcast admin data update to all subscribed admin clients"""
+        if not self.admin_subscribers:
+            return
+        
+        message = {
+            "type": "admin_update",
+            "update_type": update_type,  # "cache_status", "terminal_status", "polling_status", "database_stats"
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": data
+        }
+        
+        for client_id in self.admin_subscribers:
+            if client_id in self.active_connections:
+                try:
+                    await self.active_connections[client_id].put(message)
+                except Exception as e:
+                    logger.error(f"Error broadcasting admin_update to {client_id}: {e}")
+    
+    async def broadcast_admin_batch(self, updates: List[Dict]):
+        """Broadcast a batch of admin updates to all subscribed admin clients"""
+        if not self.admin_subscribers:
+            return
+        
+        message = {
+            "type": "admin_batch",
+            "timestamp": datetime.utcnow().isoformat(),
+            "updates": updates
+        }
+        
+        for client_id in self.admin_subscribers:
+            if client_id in self.active_connections:
+                try:
+                    await self.active_connections[client_id].put(message)
+                except Exception as e:
+                    logger.error(f"Error broadcasting admin_batch to {client_id}: {e}")
     
     async def broadcast_to_account(self, account_id: str, message: Dict):
         """Broadcast a message to all clients connected to an account"""

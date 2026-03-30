@@ -197,6 +197,35 @@
   line-height: 1.5;
 }
 
+.btn-link-server {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  text-decoration: underline;
+  padding: var(--space-md) 0;
+  transition: var(--transition);
+  margin-top: var(--space-md);
+}
+
+.btn-link-server:hover:not(:disabled) {
+  color: var(--color-primary-light);
+  opacity: 0.8;
+}
+
+.btn-link-server:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  margin-top: var(--space-sm);
+  line-height: 1.4;
+}
+
 @media (max-width: 768px) {
   .login-container {
     flex-direction: column;
@@ -216,3 +245,4 @@
     margin: 0 var(--space-lg);
   }
 }
+

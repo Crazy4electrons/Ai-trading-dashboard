@@ -5,6 +5,7 @@ import { pollingService } from '../services/polling';
 import Watchlist from '../components/Watchlist';
 import Chart from '../components/Chart';
 import AccountPanel from '../components/AccountPanel';
+import AnalyticsPanel from '../components/AnalyticsPanel';
 import '../styles/Dashboard.css';
 
 export default function Dashboard() {
@@ -124,7 +125,33 @@ export default function Dashboard() {
 
   const handleLogout = async () => {
     try {
-      await api.logout();
+      console.log('[DASHBOARD] Logging out...');
+      
+      // Call backend logout endpoint to clear server-side session
+      try {
+        await api.logout();
+        console.log('[DASHBOARD] Backend logout successful');
+      } catch (error) {
+        // Still proceed with client-side logout even if server call fails
+        console.warn('[DASHBOARD] Backend logout failed (might be due to invalid token):', error);
+      }
+      
+      // Clear token from localStorage
+      localStorage.removeItem('access_token');
+      console.log('[DASHBOARD] Token cleared from localStorage');
+      
+      // Clear all auth state from store (this will trigger re-render and show Login)
+      useStore.setState({
+        isAuthenticated: false,
+        accessToken: null,
+        accountId: null,
+        accountNumber: null,
+        server: null,
+      });
+      console.log('[DASHBOARD] Auth state cleared, redirecting to login');
+    } catch (error) {
+      console.error('[DASHBOARD] Logout error:', error);
+      // Force redirect to login even if something fails
       localStorage.removeItem('access_token');
       useStore.setState({
         isAuthenticated: false,
@@ -133,8 +160,6 @@ export default function Dashboard() {
         accountNumber: null,
         server: null,
       });
-    } catch (error) {
-      console.error('Logout error:', error);
     }
   };
 
@@ -170,6 +195,11 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+
+      {/* Analytics Section */}
+      <section className="dashboard-analytics">
+        <AnalyticsPanel />
+      </section>
 
       {/* Main content */}
       <div className="dashboard-content">
